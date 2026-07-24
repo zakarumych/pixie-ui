@@ -1,0 +1,9 @@
+[package]
+name = "pixie-ui-mev"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pixie-ui = { path = ".." }
+mev = { git = "https://github.com/zakarumych/mev.git" }
+bytemuck = "1"
