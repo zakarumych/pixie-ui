@@ -2,6 +2,7 @@ pub mod align;
 pub mod button;
 pub mod color;
 pub mod draw;
+pub mod event;
 pub mod font;
 pub mod layout;
 pub mod margin;
@@ -11,10 +12,11 @@ pub mod text;
 pub mod texture;
 pub mod ui;
 pub mod widget;
+pub mod world;
 
 #[doc(hidden)]
 pub mod for_macro {
-    pub use crate::style::{__AttributesUpdateBind, Attributes, AttributesUpdate};
+    pub use crate::style::{Attributes, AttributesUpdate, AttributesUpdateSystem};
     pub use edict::{entity::EntityId, world::World};
 }
 

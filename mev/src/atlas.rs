@@ -14,16 +14,27 @@ pub struct Atlas {
 }
 
 impl Atlas {
-    /// Returns the UV rect (u0, v0, u1, v1) covering the top-left `visible_w x visible_h`
-    /// sub-rectangle of the glyph's cell (glyphs narrower/shorter than the cell are assumed
-    /// to be packed flush against the cell's top-left corner).
-    pub fn glyph_uv(&self, glyph_index: u32, visible_w: u32, visible_h: u32) -> (f32, f32, f32, f32) {
+    /// Returns the UV rect (u0, v0, u1, v1) covering the `visible_w x visible_h` sub-rectangle
+    /// of the glyph's cell starting at `(offset_x, offset_y)` from the cell's top-left corner
+    /// (i.e. the ink's own bounding-box origin within the cell — glyphs whose ink doesn't start
+    /// flush at the cell edge, e.g. a trimmed proportional font, need this to sample the right
+    /// sub-rectangle instead of always starting at the cell's own origin).
+    pub fn glyph_uv(
+        &self,
+        glyph_index: u32,
+        offset_x: u32,
+        offset_y: u32,
+        visible_w: u32,
+        visible_h: u32,
+    ) -> (f32, f32, f32, f32) {
         let col = glyph_index % self.cols;
         let row = glyph_index / self.cols;
-        let x0 = col * self.glyph_w;
-        let y0 = row * self.glyph_h;
-        let visible_w = visible_w.min(self.glyph_w);
-        let visible_h = visible_h.min(self.glyph_h);
+        let offset_x = offset_x.min(self.glyph_w);
+        let offset_y = offset_y.min(self.glyph_h);
+        let x0 = col * self.glyph_w + offset_x;
+        let y0 = row * self.glyph_h + offset_y;
+        let visible_w = visible_w.min(self.glyph_w - offset_x);
+        let visible_h = visible_h.min(self.glyph_h - offset_y);
 
         let atlas_w = self.atlas_w as f32;
         let atlas_h = self.atlas_h as f32;
@@ -65,7 +76,7 @@ pub fn build_atlas(queue: &mut mev::Queue, font: &Font) -> Result<Atlas, crate::
 
         for y in 0..glyph_h {
             for x in 0..glyph_w {
-                let bit_index = base_bit + (y * glyph_w + x) as usize;
+                let bit_index = base_bit + (x * glyph_h + y) as usize;
                 let byte_index = bit_index / 8;
                 let bit_in_byte = bit_index % 8;
                 let bit = bitmap
@@ -111,7 +122,10 @@ pub fn build_atlas(queue: &mut mev::Queue, font: &Font) -> Result<Atlas, crate::
             0..1,
             0,
         );
-        copy.barrier(mev::PipelineStages::TRANSFER, mev::PipelineStages::FRAGMENT_SHADER);
+        copy.barrier(
+            mev::PipelineStages::TRANSFER,
+            mev::PipelineStages::FRAGMENT_SHADER,
+        );
     }
     let cbuf = encoder.finish();
     queue.submit_checkpoint([cbuf])?;

@@ -46,6 +46,7 @@ pub fn var5x7() -> Font {
                     w: (bbox.rb.x - bbox.lt.x) as u32 + 1,
                     h: (bbox.rb.y - bbox.lt.y) as u32 + 1,
                 },
+                offset: Vec::ZERO,
                 bbox: bbox,
             }
         })

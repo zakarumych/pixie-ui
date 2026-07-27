@@ -10,4 +10,4 @@ foldhash = "0.2"
 smallvec = "1.15"
 
 [workspace]
-members = ["mev", "demo"]
+members = ["mev", "demo", "winit"]

@@ -34,6 +34,10 @@ impl Color {
         a: 255,
     };
 
+    pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+        Color { r, g, b, a: 255 }
+    }
+
     pub const fn from_premultiplied(r: u8, g: u8, b: u8, a: u8) -> Self {
         Color { r, g, b, a }
     }
@@ -79,6 +83,10 @@ impl Color {
             b: div255(self.b as u32 * new_a32 * 255 / a32 / 255) as u8,
             a,
         }
+    }
+
+    pub const fn under(self, dst: Color) -> Color {
+        dst.over(self)
     }
 
     /// Premultiplied "src over dst" compositing.

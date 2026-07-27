@@ -8,14 +8,15 @@ use crate::{
     align::{Align, Align2},
     color::Color,
     draw::{Brush, Draw, Stroke},
+    event::PixieEvent,
     font::{Font, FontId},
-    layout::{Arranged, ContentLayout, layout_system},
+    layout::{Arranged, ContentLayout},
     margin::Margin,
-    math::Rect,
-    style::{InputState, ResolvedAttributes, Style},
+    math::{Pos, Rect},
+    style::{ResolvedAttributes, InputState},
     text::{Glyph, Text},
     texture::TextureId,
-    widget::{Container, Widget},
+    widget::{Container, SensesClicks, SensesCursor, Widget},
 };
 
 /// A user-interface resource.
@@ -119,24 +120,24 @@ impl Ui {
         self.default_text_color
     }
 
+    pub fn input(&self) -> &InputState {
+        &self.input
+    }
+
     /// Walks every [`Widget`] entity and emits [`Draw`] commands describing how to render it,
     /// in painter's-algorithm order (a parent's own background is emitted before its children's).
     ///
     /// # Preconditions
     ///
     /// Every `Widget` entity that should be drawn must already have a [`Arranged`] component
-    /// (i.e. this must run after [`crate::layout::resolve_rects`]) and a [`ResolvedAttributes`]
+    /// (i.e. this must run after [`crate::layout::resolve_rects`]) and a [`FinalAttributes`]
     /// component with theme/fallback merging applied (i.e. this must run after
     /// [`crate::style::Style::resolve_attributes`]). Widgets without a `Arranged` (and, by
     /// construction from `resolve_rects`, their entire subtree) are silently skipped.
-    pub fn draw_ui<'a>(
-        &self,
-        style: &Style,
-        world: &'a mut World,
-        commands: &mut impl Extend<Draw<'a>>,
-    ) {
-        style.resolve_attributes(world, self.input);
-        layout_system(world);
+    pub fn draw_ui<'a>(world: &mut World, commands: &mut impl Extend<Draw<'a>>) {
+        let Some(ui) = world.remove_resource::<Ui>() else {
+            return;
+        };
 
         let roots: Vec<EntityId> = world
             .view::<(Entities, &Widget)>()
@@ -146,16 +147,18 @@ impl Ui {
             .collect();
 
         let root_inherited = InheritedPaint {
-            fg_brush: Brush::Solid(self.default_fg_color),
-            bg_brush: Brush::Solid(self.default_bg_color),
+            fg_brush: Brush::Solid(ui.default_fg_color),
+            bg_brush: Brush::Solid(ui.default_bg_color),
             stroke: None,
-            text_font: self.default_text_font,
-            text_brush: Brush::Solid(self.default_text_color),
+            text_font: ui.default_text_font,
+            text_brush: Brush::Solid(ui.default_text_color),
         };
 
         for root in roots {
-            draw_widget(world, self, root, root_inherited, commands);
+            draw_widget(world, &ui, root, root_inherited, commands);
         }
+
+        world.insert_resource(ui);
     }
 }
 
@@ -186,7 +189,7 @@ fn draw_widget<'w, 'a>(
     inherited: InheritedPaint,
     commands: &mut impl Extend<Draw<'a>>,
 ) {
-    let Ok(rect) = world.get::<&Arranged>(id).map(|r| r.0) else {
+    let Ok(rect) = world.get::<&Arranged>(id).map(|r| r.rect) else {
         // Unresolved widget: by construction from `resolve_rects`, its whole subtree is
         // also unresolved, so there's nothing further to draw here.
         return;
@@ -238,4 +241,44 @@ fn draw_widget<'w, 'a>(
             draw_widget(world, ui, child, resolved, commands);
         }
     }
+}
+
+/// Feeds a [`PixieEvent`] into the UI, updating hover/press state by hit-testing
+/// against widgets' [`Arranged`] rects (top-most/deepest layer wins on overlap —
+/// z-fighting among widgets at the same layer is not resolved here). Hover
+/// requires [`crate::widget::SensesCursor`]; press/release requires
+/// [`crate::widget::SensesClicks`]. No click callbacks yet — this only updates
+/// `Ui`'s internal hover/press state; callers can read it back via
+/// [`Ui::hovered`]/[`Ui::pressed`] to build their own click handling.
+pub fn handle_event(world: &World, event: PixieEvent) {
+    let Some(mut ui) = world.get_resource_mut::<Ui>() else {
+        return;
+    };
+
+    match event {
+        PixieEvent::CursorMoved { pos } => {
+            ui.input.cursor = Some(pos);
+            ui.input.hovered = hit_test::<SensesCursor>(world, pos);
+        }
+        PixieEvent::ButtonPressed => {
+            if let Some(pos) = ui.input.cursor {
+                ui.input.pressed = hit_test::<SensesClicks>(world, pos);
+            }
+        }
+        PixieEvent::ButtonReleased => {
+            ui.input.pressed = None;
+        }
+    }
+}
+
+/// Returns the entity with the deepest `Arranged.layer` (i.e. visually top-most)
+/// among all `M`-marked widgets whose `Arranged.rect` contains `pos`, or `None`.
+fn hit_test<M: edict::component::Component>(world: &World, pos: Pos) -> Option<EntityId> {
+    let mut best: Option<(EntityId, u32)> = None;
+    for (e, arranged) in world.view::<(Entities, &Arranged)>().with::<M>() {
+        if arranged.rect.contains(pos) && best.is_none_or(|(_, layer)| arranged.layer >= layer) {
+            best = Some((e.id(), arranged.layer));
+        }
+    }
+    best.map(|(id, _)| id)
 }

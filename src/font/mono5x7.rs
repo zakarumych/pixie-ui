@@ -431,6 +431,7 @@ pub fn mono5x7() -> Font {
                 w: GLYPH_W + 1,
                 h: GLYPH_H + 1,
             },
+            offset: Vec::ZERO,
             bbox: Rect {
                 lt: Pos { x: 0, y: 0 },
                 rb: Pos {

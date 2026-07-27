@@ -14,7 +14,9 @@ pub struct Bitmap {
     pub glyph_size: Size,
 
     /// The bitmap data for each glyph in the font.
-    /// Each glyph occupies round_up(glyph_size.w * glyph_size.h, 32) bits in the bitmap.
+    /// Each glyph occupies round_up(glyph_size.w * glyph_size.h, 32) bits in the bitmap,
+    /// packed in column-major order: bit index within a glyph is `x * glyph_size.h + y`
+    /// (column `x`, row `y`), rounded up to a whole 32-bit chunk per glyph.
     pub bitmap: Box<[u8]>,
 }
 
@@ -22,9 +24,17 @@ pub struct Metrics {
     /// The horizontal and vertical advance of the glyph in pixels.
     pub advance: Size,
 
-    /// The bounding box of the glyph in pixels with respect to the glyph's origin.
-    ///
-    /// When reading bitmap, the size of this rect is used to determine the size of the glyph in the bitmap.
+    /// Offset from the pen position to `bbox`'s top-left corner when drawing on screen
+    /// (e.g. a left/top bearing). Zero draws `bbox` flush at the pen. Kept separate from
+    /// `bbox` itself since `bbox` lives in bitmap-cell coordinates (see below) — needed
+    /// for glyphs whose ink isn't meant to start exactly at the pen, e.g. italic overhang
+    /// or other bearings a more complex font might have.
+    pub offset: Vec,
+
+    /// The sub-rectangle of the glyph's fixed-size bitmap cell that actually holds ink,
+    /// in bitmap-cell pixel coordinates (`(0, 0)` is the cell's own top-left corner, not
+    /// the pen/cursor position). Used both as the rendered glyph's on-screen size and,
+    /// via its `lt` offset, to locate that sub-rectangle within a packed atlas cell.
     pub bbox: Rect,
 }
 

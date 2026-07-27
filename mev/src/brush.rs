@@ -63,8 +63,14 @@ pub fn resolve_brush(
             kind: 1,
             color0: color_to_f32(start.1),
             color1: color_to_f32(end.1),
-            grad_start: [start.0.x as f32, start.0.y as f32],
-            grad_end: [end.0.x as f32, end.0.y as f32],
+            grad_start: [
+                start.0.x as f32 + rect.lt.x as f32,
+                start.0.y as f32 + rect.lt.y as f32,
+            ],
+            grad_end: [
+                end.0.x as f32 + rect.lt.x as f32,
+                end.0.y as f32 + rect.lt.y as f32,
+            ],
             uv_scale: [0.0; 2],
             uv_bias: [0.0; 2],
             texture: None,

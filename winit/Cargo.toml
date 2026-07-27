@@ -1,0 +1,8 @@
+[package]
+name = "pixie-ui-winit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pixie-ui = { path = ".." }
+winit = { version = "0.30" }

@@ -10,7 +10,7 @@
 use edict::{
     component::Component,
     entity::EntityId,
-    query::{AsDefaultSendQuery, Entities, QueryItem},
+    query::{Alt, AsDefaultSendQuery, Entities, QueryItem},
     world::World,
 };
 
@@ -21,6 +21,7 @@ use crate::{
     layout::ContentLayout,
     margin::Margin,
     math::{Pos, Ratio, Size},
+    ui::Ui,
     widget::Widget,
 };
 
@@ -135,7 +136,8 @@ pub trait AttributesUpdate {
     );
 }
 
-trait AttributesUpdateSystem {
+#[doc(hidden)]
+pub trait AttributesUpdateSystem {
     fn update(&self, world: &mut World, input: InputState);
 }
 
@@ -145,7 +147,7 @@ where
 {
     fn update(&self, world: &mut World, input: InputState) {
         let view = world
-            .view::<(Entities, T::Query, &mut ResolvedAttributes)>()
+            .view::<(Entities, T::Query, &mut StyledAttributes)>()
             .with::<Widget>();
 
         for (e, v, r) in view {
@@ -176,11 +178,28 @@ impl Style {
         self.stack.push(Box::new(update));
     }
 
-    pub(crate) fn resolve_attributes(&self, world: &mut World, input: InputState) {
+    pub fn resolve_attributes(&self, world: &mut World) {
+        let input = {
+            let Some(ui) = world.get_resource::<Ui>() else {
+                return;
+            };
+
+            *ui.input()
+        };
+
         let world = world.local();
-        let view = world.view::<&mut ResolvedAttributes>().with::<Widget>();
+        let view = world.view::<&mut StyledAttributes>().with::<Widget>();
         for r in view {
             r.0 = self.fallback;
+        }
+
+        let view = world
+            .view::<Entities>()
+            .with::<Widget>()
+            .without::<StyledAttributes>();
+
+        for e in view {
+            world.insert_defer(e, StyledAttributes(self.fallback));
         }
 
         let view = world
@@ -192,133 +211,26 @@ impl Style {
             world.insert_defer(e, ResolvedAttributes(self.fallback));
         }
 
+        world.run_deferred();
+
         for update in &self.stack {
             update.update(world, input);
         }
-    }
-}
 
-#[doc(hidden)]
-pub trait __AttributesUpdateBind<T> {
-    type Rest;
+        for (mut resolved_attrs, styled_attrs, own_attrs) in world.view::<(
+            Alt<ResolvedAttributes>,
+            &StyledAttributes,
+            Option<&Attributes>,
+        )>() {
+            let mut attrs = styled_attrs.0;
+            if let Some(own_attrs) = own_attrs {
+                attrs.merge(own_attrs);
+            }
 
-    fn bind(self) -> (T, Self::Rest);
-}
-
-impl<'a> __AttributesUpdateBind<EntityId> for (EntityId, &'a mut World, InputState) {
-    type Rest = (&'a mut World, InputState);
-
-    #[inline(always)]
-    fn bind(self) -> (EntityId, (&'a mut World, InputState)) {
-        let (widget, world, input) = self;
-        (widget, (world, input))
-    }
-}
-
-impl<'a> __AttributesUpdateBind<&'a mut World> for (EntityId, &'a mut World, InputState) {
-    type Rest = (EntityId, InputState);
-
-    #[inline(always)]
-    fn bind(self) -> (&'a mut World, (EntityId, InputState)) {
-        let (widget, world, input) = self;
-        (world, (widget, input))
-    }
-}
-
-impl<'a> __AttributesUpdateBind<InputState> for (EntityId, &'a mut World, InputState) {
-    type Rest = (EntityId, &'a mut World);
-
-    #[inline(always)]
-    fn bind(self) -> (InputState, (EntityId, &'a mut World)) {
-        let (widget, world, input) = self;
-        (input, (widget, world))
-    }
-}
-
-impl<'a> __AttributesUpdateBind<EntityId> for (EntityId, &'a mut World) {
-    type Rest = &'a mut World;
-
-    #[inline(always)]
-    fn bind(self) -> (EntityId, &'a mut World) {
-        let (widget, world) = self;
-        (widget, world)
-    }
-}
-
-impl<'a> __AttributesUpdateBind<&'a mut World> for (EntityId, &'a mut World) {
-    type Rest = EntityId;
-
-    #[inline(always)]
-    fn bind(self) -> (&'a mut World, EntityId) {
-        let (widget, world) = self;
-        (world, widget)
-    }
-}
-
-impl<'a> __AttributesUpdateBind<&'a mut World> for (&'a mut World, InputState) {
-    type Rest = InputState;
-
-    #[inline(always)]
-    fn bind(self) -> (&'a mut World, InputState) {
-        let (world, input) = self;
-        (world, input)
-    }
-}
-
-impl<'a> __AttributesUpdateBind<InputState> for (&'a mut World, InputState) {
-    type Rest = &'a mut World;
-
-    #[inline(always)]
-    fn bind(self) -> (InputState, &'a mut World) {
-        let (world, input) = self;
-        (input, world)
-    }
-}
-
-impl __AttributesUpdateBind<EntityId> for (EntityId, InputState) {
-    type Rest = InputState;
-
-    #[inline(always)]
-    fn bind(self) -> (EntityId, InputState) {
-        let (widget, input) = self;
-        (widget, input)
-    }
-}
-
-impl __AttributesUpdateBind<InputState> for (EntityId, InputState) {
-    type Rest = EntityId;
-
-    #[inline(always)]
-    fn bind(self) -> (InputState, EntityId) {
-        let (widget, input) = self;
-        (input, widget)
-    }
-}
-
-impl __AttributesUpdateBind<EntityId> for EntityId {
-    type Rest = ();
-
-    #[inline(always)]
-    fn bind(self) -> (EntityId, ()) {
-        (self, ())
-    }
-}
-
-impl<'a> __AttributesUpdateBind<&'a mut World> for &'a mut World {
-    type Rest = ();
-
-    #[inline(always)]
-    fn bind(self) -> (&'a mut World, ()) {
-        (self, ())
-    }
-}
-
-impl __AttributesUpdateBind<InputState> for InputState {
-    type Rest = ();
-
-    #[inline(always)]
-    fn bind(self) -> (InputState, ()) {
-        (self, ())
+            if resolved_attrs.0 != attrs {
+                resolved_attrs.0 = attrs;
+            }
+        }
     }
 }
 
@@ -329,7 +241,9 @@ macro_rules! attributes_update {
     ($vis:vis $name:ident ($($bind:ident : $bind_type:ty),* $(,)?) if $checks:expr => { $($attr:ident: $value:expr),+ $(,)? }) => {
         $vis struct $name;
 
-        impl $crate::for_macro::AttributesUpdate for $name {
+        impl $crate::for_macro::AttributesUpdateSystem for $name {
+            type Query = ($($bind_type),*);
+
             fn update(
                 &self,
                 __attributes: &mut $crate::for_macro::Attributes,
@@ -356,11 +270,15 @@ macro_rules! attributes_update {
 }
 
 #[derive(Clone, Copy, Default, Component)]
+struct StyledAttributes(pub Attributes);
+
+#[derive(Clone, Copy, Default, Component)]
 pub(crate) struct ResolvedAttributes(pub Attributes);
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct InputState {
+pub struct InputState {
     pub focused: Option<EntityId>,
     pub hovered: Option<EntityId>,
     pub pressed: Option<EntityId>,
+    pub cursor: Option<Pos>,
 }

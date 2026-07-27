@@ -39,7 +39,10 @@ pub(crate) struct MinSize(pub Size);
 
 /// The rect of a widget calculated by the layout system, after measuring and arranging its content and children.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component)]
-pub(crate) struct Arranged(pub Rect);
+pub(crate) struct Arranged {
+    pub rect: Rect,
+    pub layer: u32,
+}
 
 fn ensure_arranged_and_min_size(world: &mut World) {
     let world = world.local();
@@ -56,10 +59,25 @@ fn ensure_arranged_and_min_size(world: &mut World) {
                 world.insert_defer(e, MinSize(Size::ZERO));
             }
             (None, Some(_)) => {
-                world.insert_defer(e, Arranged(Rect::ZERO));
+                world.insert_defer(
+                    e,
+                    Arranged {
+                        rect: Rect::ZERO,
+                        layer: 0,
+                    },
+                );
             }
             (None, None) => {
-                world.insert_bundle_defer(e, (Arranged(Rect::ZERO), MinSize(Size::ZERO)));
+                world.insert_bundle_defer(
+                    e,
+                    (
+                        Arranged {
+                            rect: Rect::ZERO,
+                            layer: 0,
+                        },
+                        MinSize(Size::ZERO),
+                    ),
+                );
             }
         }
     }
@@ -184,6 +202,7 @@ fn arrange_tree(
     offer: Rect,
     parent_rect: Rect,
     fallback_align: Align2,
+    layer: u32,
     world: &World,
     ui: &Ui,
     view: &View<(&ResolvedAttributes, &MinSize, Option<&Container>)>,
@@ -227,7 +246,8 @@ fn arrange_tree(
             let size = resolve_size(attrs.0.size, min_size.0, offer_w, offer_h, parent_rect);
             let rect = resolve_rect(offer, size, attrs.0.position, align);
             if let Some(a) = arranged.get_mut(entity) {
-                a.0 = rect;
+                a.rect = rect;
+                a.layer = layer;
             }
             rect
         }
@@ -239,6 +259,7 @@ fn arrange_tree(
             content_layout,
             content_align,
             inner_margin,
+            layer,
             container,
             world,
             ui,
@@ -266,7 +287,8 @@ fn arrange_tree(
             let final_rect = resolve_rect(offer, size, attrs.0.position, align);
 
             if let Some(a) = arranged.get_mut(entity) {
-                a.0 = final_rect;
+                a.rect = final_rect;
+                a.layer = layer;
             }
 
             // Children were arranged relative to `offer.lt`; if this widget's own final
@@ -395,6 +417,7 @@ fn arrange_children(
     content_layout: ContentLayout,
     content_align: Align2,
     inner_margin: Margin,
+    layer: u32,
     container: &Container,
     world: &World,
     ui: &Ui,
@@ -520,6 +543,7 @@ fn arrange_children(
                         child_offer,
                         rect,
                         content_align,
+                        layer + 1,
                         world,
                         ui,
                         view,
@@ -534,7 +558,17 @@ fn arrange_children(
             }
 
             for entity in absolute {
-                arrange_tree(entity, rect, rect, content_align, world, ui, view, arranged);
+                arrange_tree(
+                    entity,
+                    rect,
+                    rect,
+                    content_align,
+                    layer + 1,
+                    world,
+                    ui,
+                    view,
+                    arranged,
+                );
             }
         }
         ContentLayout::HorizontalStack => {
@@ -580,6 +614,7 @@ fn arrange_children(
                     child_offer,
                     rect,
                     content_align,
+                    layer + 1,
                     world,
                     ui,
                     view,
@@ -591,7 +626,17 @@ fn arrange_children(
             }
 
             for entity in absolute {
-                arrange_tree(entity, rect, rect, content_align, world, ui, view, arranged);
+                arrange_tree(
+                    entity,
+                    rect,
+                    rect,
+                    content_align,
+                    layer + 1,
+                    world,
+                    ui,
+                    view,
+                    arranged,
+                );
             }
         }
         ContentLayout::VerticalStack => {
@@ -634,6 +679,7 @@ fn arrange_children(
                     child_offer,
                     rect,
                     content_align,
+                    layer + 1,
                     world,
                     ui,
                     view,
@@ -645,7 +691,17 @@ fn arrange_children(
             }
 
             for entity in absolute {
-                arrange_tree(entity, rect, rect, content_align, world, ui, view, arranged);
+                arrange_tree(
+                    entity,
+                    rect,
+                    rect,
+                    content_align,
+                    layer + 1,
+                    world,
+                    ui,
+                    view,
+                    arranged,
+                );
             }
         }
     }
@@ -679,7 +735,7 @@ fn shift_subtree(
     arranged: &mut View<&mut Arranged>,
 ) {
     if let Some(a) = arranged.get_mut(entity) {
-        a.0 = shift_rect(a.0, delta);
+        a.rect = shift_rect(a.rect, delta);
     }
 
     if let Some((_, _, Some(container))) = view.get(entity) {
@@ -1081,9 +1137,9 @@ fn distribute_axis(
 ///
 /// # Precondition
 ///
-/// Every `Widget` entity must already have a [`ResolvedAttributes`] component with
+/// Every `Widget` entity must already have a [`FinalAttributes`] component with
 /// theme/fallback merging applied, i.e. this must run after `Style::resolve_attributes`.
-pub(crate) fn layout_system(world: &mut World) {
+pub fn layout_system(world: &mut World) {
     // Ensure that every widget has both an `Arranged` and a `MinSize` component.
     ensure_arranged_and_min_size(world);
 
@@ -1127,6 +1183,7 @@ pub(crate) fn layout_system(world: &mut World) {
                 ui.rect(),
                 ui.rect(),
                 ui.default_content_align(),
+                0,
                 world,
                 &ui,
                 &view,
@@ -1289,7 +1346,10 @@ mod tests {
             .unwrap()
             .insert(MinSize(min))
             .unwrap()
-            .insert(Arranged(Rect::ZERO))
+            .insert(Arranged {
+                rect: Rect::ZERO,
+                layer: 0,
+            })
             .unwrap()
             .id()
     }
@@ -1323,6 +1383,7 @@ mod tests {
             offer,
             offer,
             Align2::from(Align::Start),
+            0,
             world,
             &ui,
             &view,
@@ -1331,7 +1392,7 @@ mod tests {
     }
 
     fn arranged_rect(world: &mut World, id: EntityId) -> Rect {
-        world.get::<&Arranged>(id).unwrap().0
+        world.get::<&Arranged>(id).unwrap().rect
     }
 
     #[test]

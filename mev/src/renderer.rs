@@ -10,10 +10,10 @@ use pixie_ui::{
 };
 
 use crate::{
+    Error,
     atlas::{self, Atlas},
     brush::resolve_brush,
     gpu::{Globals, GlyphInstanceGpu, RectArguments, RectInstanceGpu, TextArguments},
-    Error,
 };
 
 fn to_mev_address(mode: AddressMode) -> mev::AddressMode {
@@ -73,8 +73,7 @@ enum Layer {
 
 /// Renders pixie-ui `Draw` commands onto an existing `mev::Image`.
 pub struct Renderer {
-    queue: mev::Queue,
-
+    device: mev::Device,
     rect_pipeline: Option<(mev::PixelFormat, mev::RenderPipeline)>,
     text_pipeline: Option<(mev::PixelFormat, mev::RenderPipeline)>,
 
@@ -94,7 +93,7 @@ pub struct Renderer {
 impl Renderer {
     /// Creates a new renderer, uploading the small fixed resources (dummy texture,
     /// samplers, globals buffer) synchronously.
-    pub fn new(mut queue: mev::Queue) -> Result<Self, Error> {
+    pub fn new(queue: &mut mev::Queue) -> Result<Self, Error> {
         let dummy_image = queue.new_image(mev::ImageDesc::new_d2_texture(
             1,
             1,
@@ -125,7 +124,10 @@ impl Renderer {
                 0..1,
                 0,
             );
-            copy.barrier(mev::PipelineStages::TRANSFER, mev::PipelineStages::FRAGMENT_SHADER);
+            copy.barrier(
+                mev::PipelineStages::TRANSFER,
+                mev::PipelineStages::FRAGMENT_SHADER,
+            );
         }
         let cbuf = encoder.finish();
         queue.submit_checkpoint([cbuf])?;
@@ -144,7 +146,7 @@ impl Renderer {
         });
 
         Ok(Renderer {
-            queue,
+            device: queue.device().clone(),
             rect_pipeline: None,
             text_pipeline: None,
             textures: HashMap::new(),
@@ -181,19 +183,24 @@ impl Renderer {
             ],
             ..mev::SamplerDesc::new()
         };
-        let sampler = self.queue.new_sampler(desc);
+        let sampler = self.device.new_sampler(desc);
         self.samplers.insert(mode, sampler.clone());
         sampler
     }
 
-    fn ensure_atlas(&mut self, font_id: FontId, ui: &Ui) -> Result<bool, Error> {
+    fn ensure_atlas(
+        &mut self,
+        queue: &mut mev::Queue,
+        font_id: FontId,
+        ui: &Ui,
+    ) -> Result<bool, Error> {
         if self.atlases.contains_key(&font_id) {
             return Ok(true);
         }
         let Some(font) = ui.font(font_id) else {
             return Ok(false);
         };
-        let atlas = atlas::build_atlas(&mut self.queue, font)?;
+        let atlas = atlas::build_atlas(queue, font)?;
         self.atlases.insert(font_id, atlas);
         Ok(true)
     }
@@ -202,9 +209,12 @@ impl Renderer {
         if matches!(&self.rect_pipeline, Some((f, _)) if *f == format) {
             return Ok(());
         }
-        let pipeline = build_pipeline(&mut self.queue, crate::gpu::RECT_WGSL, format, &[
-            RectArguments::LAYOUT,
-        ])?;
+        let pipeline = build_pipeline(
+            &mut self.device,
+            crate::gpu::RECT_WGSL,
+            format,
+            &[RectArguments::LAYOUT],
+        )?;
         self.rect_pipeline = Some((format, pipeline));
         Ok(())
     }
@@ -213,9 +223,12 @@ impl Renderer {
         if matches!(&self.text_pipeline, Some((f, _)) if *f == format) {
             return Ok(());
         }
-        let pipeline = build_pipeline(&mut self.queue, crate::gpu::TEXT_WGSL, format, &[
-            TextArguments::LAYOUT,
-        ])?;
+        let pipeline = build_pipeline(
+            &mut self.device,
+            crate::gpu::TEXT_WGSL,
+            format,
+            &[TextArguments::LAYOUT],
+        )?;
         self.text_pipeline = Some((format, pipeline));
         Ok(())
     }
@@ -228,7 +241,7 @@ impl Renderer {
         };
         if recreate {
             let size = needed.next_power_of_two();
-            self.rect_buffer = Some(self.queue.new_buffer(mev::BufferDesc {
+            self.rect_buffer = Some(self.device.new_buffer(mev::BufferDesc {
                 size,
                 usage: mev::BufferUsage::STORAGE | mev::BufferUsage::TRANSFER_DST,
                 name: "pixie-ui-mev-rect-instances",
@@ -245,7 +258,7 @@ impl Renderer {
         };
         if recreate {
             let size = needed.next_power_of_two();
-            self.text_buffer = Some(self.queue.new_buffer(mev::BufferDesc {
+            self.text_buffer = Some(self.device.new_buffer(mev::BufferDesc {
                 size,
                 usage: mev::BufferUsage::STORAGE | mev::BufferUsage::TRANSFER_DST,
                 name: "pixie-ui-mev-text-instances",
@@ -256,7 +269,13 @@ impl Renderer {
 
     /// Draws `draws` onto `image`, compositing over its existing content (it is not cleared).
     /// Submits synchronously: the GPU work is complete by the time this call returns.
-    pub fn render(&mut self, image: &mev::Image, draws: &[Draw], ui: &Ui) -> Result<(), Error> {
+    pub fn render(
+        &mut self,
+        queue: &mut mev::Queue,
+        image: &mev::Image,
+        draws: &[Draw],
+        ui: &Ui,
+    ) -> Result<(), Error> {
         let format = image.format();
         let extent = image.extent().into_2d();
         let width = extent.width().max(1);
@@ -277,8 +296,9 @@ impl Renderer {
                     stroke,
                 } => {
                     if let Some(brush) = fill {
-                        let resolved =
-                            resolve_brush(brush, *geometry, |id| self.textures.get(&id).map(image_size));
+                        let resolved = resolve_brush(brush, *geometry, |id| {
+                            self.textures.get(&id).map(image_size)
+                        });
                         let index = rect_instances.len() as u32;
                         rect_instances.push(RectInstanceGpu {
                             geom0: rect_to_vec4(*geometry),
@@ -374,7 +394,7 @@ impl Renderer {
                     if glyphs.is_empty() {
                         continue;
                     }
-                    if !self.ensure_atlas(*font, ui)? {
+                    if !self.ensure_atlas(queue, *font, ui)? {
                         continue;
                     }
                     let Some(font_data) = ui.font(*font) else {
@@ -398,14 +418,23 @@ impl Renderer {
                         let bbox = metrics.bbox;
                         let vis_w = (bbox.rb.x - bbox.lt.x).max(0) as u32;
                         let vis_h = (bbox.rb.y - bbox.lt.y).max(0) as u32;
-                        let (u0, v0, u1, v1) = atlas.glyph_uv(glyph.0, vis_w, vis_h);
+                        let (u0, v0, u1, v1) = atlas.glyph_uv(
+                            glyph.0,
+                            bbox.lt.x.max(0) as u32,
+                            bbox.lt.y.max(0) as u32,
+                            vis_w,
+                            vis_h,
+                        );
+
+                        let pen_x = cursor_x + metrics.offset.x as f32;
+                        let pen_y = cursor_y + metrics.offset.y as f32;
 
                         text_instances.push(GlyphInstanceGpu {
                             geom: mev::vec4(
-                                cursor_x + bbox.lt.x as f32,
-                                cursor_y + bbox.lt.y as f32,
-                                cursor_x + bbox.rb.x as f32,
-                                cursor_y + bbox.rb.y as f32,
+                                pen_x,
+                                pen_y,
+                                pen_x + vis_w as f32,
+                                pen_y + vis_h as f32,
                             ),
                             atlas_uv: mev::vec4(u0, v0, u1, v1),
                             flags: mev::vec4(resolved.kind, 0, 0, 0),
@@ -465,7 +494,7 @@ impl Renderer {
         self.ensure_rect_buffer(rect_instances.len())?;
         self.ensure_text_buffer(text_instances.len())?;
 
-        let mut encoder = self.queue.new_command_encoder();
+        let mut encoder = queue.new_command_encoder();
         {
             let mut copy = encoder.copy();
             copy.barrier(
@@ -561,25 +590,24 @@ impl Renderer {
         }
 
         let cbuf = encoder.finish();
-        self.queue.submit_checkpoint([cbuf])?;
-        self.queue.wait_idle()?;
+        queue.submit([cbuf])?;
 
         Ok(())
     }
 }
 
 fn build_pipeline(
-    queue: &mut mev::Queue,
+    device: &mut mev::Device,
     wgsl: &str,
     format: mev::PixelFormat,
     arguments: &[mev::ArgumentGroupLayout<'static>],
 ) -> Result<mev::RenderPipeline, Error> {
-    let library = queue.new_shader_library(mev::LibraryDesc {
+    let library = device.new_shader_library(mev::LibraryDesc {
         name: "pixie-ui-mev",
         input: mev::LibraryInput::wgsl(wgsl),
     })?;
 
-    let pipeline = queue.new_render_pipeline(mev::RenderPipelineDesc {
+    let pipeline = device.new_render_pipeline(mev::RenderPipelineDesc {
         name: "pixie-ui-mev",
         vertex_shader: mev::Shader {
             library: library.clone(),

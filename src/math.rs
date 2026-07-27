@@ -170,6 +170,10 @@ impl Rect {
             h: (self.rb.y.max(self.lt.y) - self.lt.y) as u32,
         }
     }
+
+    pub fn contains(&self, pos: Pos) -> bool {
+        pos.x >= self.lt.x && pos.x < self.rb.x && pos.y >= self.lt.y && pos.y < self.rb.y
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
