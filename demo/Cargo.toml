@@ -9,6 +9,5 @@ pixie-ui = { path = ".." }
 pixie-ui-mev = { path = "../mev" }
 pixie-ui-winit = { path = "../winit" }
 edict = { version = "1.0.0-rc10", path = "../../edict" }
-mev = { git = "https://github.com/zakarumych/mev.git" }
+mev = { path = "../../mev" }
 winit = { version = "0.30" }
-bytemuck = "1"

@@ -1,5 +1,4 @@
 use edict::{entity::EntityId, query::With, world::World};
-use mev::Arguments as _;
 use pixie_ui::{
     align::Align,
     button::Button,
@@ -25,83 +24,6 @@ const BUTTON_PRESSED: Color = Color::from_rgb(45, 80, 150);
 const BUTTON_HOVER: Color = Color::from_rgb(50, 100, 180);
 
 const SCALE: u32 = 4;
-
-const BLIT_WGSL: &str = include_str!("shaders/blit.wgsl");
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Zeroable, bytemuck::Pod, mev::AutoDeviceRepr)]
-struct BlitGlobalsGpu {
-    width: u32,
-    height: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Zeroable, bytemuck::Pod, mev::AutoDeviceRepr)]
-struct BlitRectGpu {
-    geom: mev::vec4<f32>,
-}
-
-#[derive(mev::Arguments)]
-struct BlitArguments {
-    #[mev(uniform)]
-    #[mev(vertex)]
-    globals: mev::Buffer,
-
-    #[mev(uniform)]
-    #[mev(vertex)]
-    dest: mev::Buffer,
-
-    #[mev(fragment)]
-    tex: mev::Image,
-
-    #[mev(fragment)]
-    samp: mev::Sampler,
-}
-
-/// Builds the render pipeline that draws the offscreen (virtual-resolution) UI texture
-/// onto the swapchain, scaled up, with nearest-neighbor sampling for crisp pixel blocks.
-fn build_blit_pipeline(queue: &mut mev::Queue, format: mev::PixelFormat) -> mev::RenderPipeline {
-    let library = queue
-        .new_shader_library(mev::LibraryDesc {
-            name: "pixie-ui-demo-blit",
-            input: mev::LibraryInput::wgsl(BLIT_WGSL),
-        })
-        .unwrap();
-
-    queue
-        .new_render_pipeline(mev::RenderPipelineDesc {
-            name: "pixie-ui-demo-blit",
-            vertex_shader: mev::Shader {
-                library: library.clone(),
-                entry: "vs_main".into(),
-            },
-            vertex_layouts: vec![],
-            vertex_attributes: vec![],
-            primitive_topology: mev::PrimitiveTopology::Triangle,
-            raster: Some(mev::RasterDesc {
-                fragment_shader: Some(mev::Shader {
-                    library,
-                    entry: "fs_main".into(),
-                }),
-                color_targets: vec![mev::ColorTargetDesc {
-                    format,
-                    // `None` here doesn't mean "blending disabled, opaque overwrite" — mev's
-                    // Vulkan backend leaves the color-write mask unset (zero) when `blend` is
-                    // `None`, so nothing gets written to the target at all. `Some(default())`
-                    // (same as the rect/text pipelines) gives a normal write mask; since the
-                    // offscreen UI texture is fully opaque, src-over blending reduces to a
-                    // straight replace anyway.
-                    blend: Some(mev::BlendDesc::default()),
-                }],
-                depth_stencil: None,
-                front_face: mev::FrontFace::default(),
-                culling: mev::Culling::None,
-            }),
-            arguments: &[BlitArguments::LAYOUT],
-            constants: 0,
-        })
-        .unwrap()
-}
 
 fn card_pos(virt_w: u32, virt_h: u32) -> Pos {
     let x = ((virt_w as i32) - CARD_SIZE.w as i32).max(0) / 2;
@@ -270,10 +192,7 @@ struct App {
     window: Option<winit::window::Window>,
     offscreen: Option<mev::Image>,
     offscreen_size: (u32, u32),
-    blit_pipeline: Option<(mev::PixelFormat, mev::RenderPipeline)>,
-    blit_sampler: Option<mev::Sampler>,
-    blit_globals: Option<mev::Buffer>,
-    blit_dest: Option<mev::Buffer>,
+    blit: Option<mev::kernels::blit::Blit>,
     device: Option<mev::Device>,
 }
 
@@ -351,36 +270,10 @@ impl App {
             .unwrap();
 
         let mut frame = self.surface.as_mut().unwrap().next_frame().unwrap();
-        let frame_format = frame.image().format();
 
-        if !matches!(&self.blit_pipeline, Some((f, _)) if *f == frame_format) {
-            self.blit_pipeline = Some((frame_format, build_blit_pipeline(queue, frame_format)));
+        if self.blit.is_none() {
+            self.blit = Some(mev::kernels::blit::Blit::new(device));
         }
-        if self.blit_sampler.is_none() {
-            self.blit_sampler = Some(queue.new_sampler(mev::SamplerDesc::new()));
-        }
-        if self.blit_globals.is_none() {
-            self.blit_globals = Some(device.new_buffer(mev::BufferDesc {
-                size: std::mem::size_of::<BlitGlobalsGpu>(),
-                usage: mev::BufferUsage::UNIFORM | mev::BufferUsage::TRANSFER_DST,
-                name: "pixie-ui-demo-blit-globals",
-            }));
-        }
-        if self.blit_dest.is_none() {
-            self.blit_dest = Some(device.new_buffer(mev::BufferDesc {
-                size: std::mem::size_of::<BlitRectGpu>(),
-                usage: mev::BufferUsage::UNIFORM | mev::BufferUsage::TRANSFER_DST,
-                name: "pixie-ui-demo-blit-dest",
-            }));
-        }
-
-        // The exact on-screen rect the upscaled image lands in: top-left aligned, sized to
-        // a whole multiple of SCALE so every virtual pixel maps to an exact SCALE x SCALE
-        // block with no partial edge scaling (any leftover sliver from non-multiple-of-SCALE
-        // window sizes is simply left as whatever the swapchain image already had — fine,
-        // it's at most SCALE-1 pixels).
-        let scaled_w = (virt_w * SCALE) as f32;
-        let scaled_h = (virt_h * SCALE) as f32;
 
         {
             queue.sync_frame(&mut frame, mev::PipelineStages::COLOR_OUTPUT);
@@ -391,6 +284,7 @@ impl App {
                 mev::PipelineStages::COLOR_OUTPUT,
                 frame.image(),
             );
+
             // Make the offscreen UI render (already complete — `Renderer::render` submits and
             // waits idle synchronously) visible to the blit's fragment shader read below.
             encoder.barrier(
@@ -398,57 +292,17 @@ impl App {
                 mev::PipelineStages::FRAGMENT_SHADER,
             );
 
-            {
-                let mut copy = encoder.copy();
-                copy.barrier(
-                    mev::PipelineStages::VERTEX_SHADER,
-                    mev::PipelineStages::TRANSFER,
-                );
-                copy.write_buffer(
-                    self.blit_globals.as_ref().unwrap(),
-                    &BlitGlobalsGpu {
-                        width: size.width,
-                        height: size.height,
-                    },
-                );
-                copy.write_buffer(
-                    self.blit_dest.as_ref().unwrap(),
-                    &BlitRectGpu {
-                        geom: mev::vec4(0.0, 0.0, scaled_w, scaled_h),
-                    },
-                );
-                copy.barrier(
-                    mev::PipelineStages::TRANSFER,
-                    mev::PipelineStages::VERTEX_SHADER,
-                );
-            }
-
-            {
-                let mut render = encoder.render(mev::RenderPassDesc {
-                    name: "pixie-ui-demo-blit",
-                    color_attachments: &[mev::AttachmentDesc::new(frame.image())],
-                    depth_stencil_attachment: None,
-                });
-                render.with_viewport(
-                    mev::Offset3::ZERO,
-                    mev::Extent3::new(size.width, size.height, 1).cast_as_f32(),
-                );
-                render.with_scissor(
-                    mev::Offset2::ZERO,
-                    mev::Extent2::new(size.width, size.height),
-                );
-                render.with_pipeline(&self.blit_pipeline.as_ref().unwrap().1);
-                render.with_arguments(
-                    0,
-                    &BlitArguments {
-                        globals: self.blit_globals.as_ref().unwrap().clone(),
-                        dest: self.blit_dest.as_ref().unwrap().clone(),
-                        tex: offscreen.clone(),
-                        samp: self.blit_sampler.as_ref().unwrap().clone(),
-                    },
-                );
-                render.draw(0..6, 0..1);
-            }
+            self.blit.as_ref().unwrap().blit(
+                &mut encoder,
+                &offscreen,
+                mev::Offset3::ZERO,
+                mev::Extent3::new(virt_w, virt_h, 1),
+                frame.image(),
+                mev::Offset3::ZERO,
+                frame.image().extent().into_3d(),
+                [mev::AddressMode::Repeat; 3],
+                mev::Filter::Nearest,
+            );
 
             window.pre_present_notify();
             encoder.present(frame, mev::PipelineStages::COLOR_OUTPUT);
@@ -551,10 +405,7 @@ fn main() {
         ui_state: UiState::new(),
         offscreen: None,
         offscreen_size: (0, 0),
-        blit_pipeline: None,
-        blit_sampler: None,
-        blit_globals: None,
-        blit_dest: None,
+        blit: None,
     };
 
     let _ = event_loop.run_app(&mut app);
