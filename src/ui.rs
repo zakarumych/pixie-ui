@@ -13,7 +13,7 @@ use crate::{
     layout::{Arranged, ContentLayout},
     margin::Margin,
     math::{Pos, Rect},
-    style::{ResolvedAttributes, InputState},
+    style::{InputState, ResolvedAttributes},
     text::{Glyph, Text},
     texture::TextureId,
     widget::{Container, SensesClicks, SensesCursor, Widget},
@@ -222,8 +222,13 @@ fn draw_widget<'w, 'a>(
             .filter_map(|c| font.mapping.get(&c).map(|&idx| Glyph(idx)))
             .collect();
 
+        let text_align = attrs.text_align.unwrap_or(Align::Start.into());
+        let text_rect = font.text_bbox(&text.string);
+
+        let text_offset = text_align.rect_offset(rect, text_rect);
+
         commands.extend(std::iter::once(Draw::Text {
-            rect,
+            start: text_offset,
             font: resolved.text_font,
             glyphs: Cow::Owned(glyphs),
             brush: resolved.text_brush,

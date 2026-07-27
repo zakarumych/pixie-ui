@@ -1,7 +1,10 @@
 use foldhash::fast::RandomState;
 use hashbrown::HashMap;
 
-use crate::math::{Rect, Size, Vec};
+use crate::{
+    math::{Pos, Rect, Size, Vec},
+    text::Glyph,
+};
 
 mod mono5x7;
 mod var5x7;
@@ -63,6 +66,47 @@ pub struct Font {
 
     /// The mapping from characters to glyph indices in the font.
     pub mapping: HashMap<char, u32, RandomState>,
+}
+
+impl Font {
+    /// Returns the bounding rectangle of the text when rendered with this font.
+    pub fn text_bbox(&self, text: &str) -> Rect {
+        let mut rect = Rect::ZERO;
+        let mut cursor = Pos::ZERO;
+
+        for c in text.chars() {
+            if let Some(&glyph) = self.mapping.get(&c) {
+                let metrics = &self.glyph_metrics[glyph as usize];
+                let mut bbox = metrics.bbox;
+                bbox.lt.x += cursor.x;
+                bbox.lt.y += cursor.y;
+                bbox.rb.x += cursor.x;
+                bbox.rb.y += cursor.y;
+                rect = rect.union(&bbox);
+                cursor.x += metrics.advance.w as i32;
+            }
+        }
+        rect
+    }
+
+    /// Returns the bounding rectangle of the text when rendered with this font.
+    pub fn glyphs_bbox(&self, glyphs: &[Glyph]) -> Rect {
+        let mut rect = Rect::ZERO;
+        let mut cursor = Pos::ZERO;
+
+        for &glyph in glyphs {
+            if let Some(metrics) = self.glyph_metrics.get(glyph.0 as usize) {
+                let mut bbox = metrics.bbox;
+                bbox.lt.x += cursor.x;
+                bbox.lt.y += cursor.y;
+                bbox.rb.x += cursor.x;
+                bbox.rb.y += cursor.y;
+                rect = rect.union(&bbox);
+                cursor.x += metrics.advance.w as i32;
+            }
+        }
+        rect
+    }
 }
 
 /// A unique identifier for a font.

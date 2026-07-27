@@ -43,8 +43,8 @@ pub fn var5x7() -> Font {
             let bbox = ink_rect(glyph);
             Metrics {
                 advance: Size {
-                    w: (bbox.rb.x - bbox.lt.x) as u32 + 1,
-                    h: (bbox.rb.y - bbox.lt.y) as u32 + 1,
+                    w: (bbox.rb.x - bbox.lt.x) + 1,
+                    h: (bbox.rb.y - bbox.lt.y) + 1,
                 },
                 offset: Vec::ZERO,
                 bbox: bbox,

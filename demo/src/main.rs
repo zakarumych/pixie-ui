@@ -1,4 +1,9 @@
-use edict::{entity::EntityId, query::With, world::World};
+use edict::{
+    entity::EntityId,
+    flow::{FlowWorld, Flows},
+    query::With,
+    world::World,
+};
 use mev::Arguments as _;
 use pixie_ui::{
     align::Align,
@@ -7,7 +12,7 @@ use pixie_ui::{
     draw::{Brush, Draw},
     event::PixieEvent,
     layout::layout_system,
-    math::{Pos, Rect, Size},
+    math::{Pos, Rect, Size, Vec},
     style::{Attributes, AttributesUpdate, Style, WidgetSize},
     text::Text,
     ui::Ui,
@@ -133,6 +138,7 @@ impl AttributesUpdate for ButtonHoverStyle {
 
 struct UiState {
     world: World,
+    flows: Flows,
     style: Style,
     card: EntityId,
     counter: EntityId,
@@ -148,18 +154,18 @@ impl UiState {
         // style.push(ApplyOwnAttributes);
         style.push(ButtonHoverStyle);
 
-        let text = world
-            .spawn((
-                Widget { parent: None },
-                Text {
-                    string: "Click me".to_string(),
-                },
-                Attributes {
-                    bg_brush: Some(Brush::Solid(Color::TRANSPARENT)),
-                    ..Default::default()
-                },
-            ))
-            .id();
+        // let text = world
+        //     .spawn((
+        //         Widget { parent: None },
+        //         Text {
+        //             string: "Click me".to_string(),
+        //         },
+        //         Attributes {
+        //             bg_brush: Some(Brush::Solid(Color::TRANSPARENT)),
+        //             ..Default::default()
+        //         },
+        //     ))
+        //     .id();
 
         let button = world
             .spawn((
@@ -168,16 +174,20 @@ impl UiState {
                     position: Some(BUTTON_LOCAL_POS),
                     size: Some(WidgetSize::Fixed(BUTTON_SIZE)),
                     text_brush: Some(Brush::Solid(Color::WHITE)),
+                    text_align: Some(Align::Center.into()),
                     // text_font: Some(FontId(1)),
                     content_align: Some(Align::Center.into()),
                     ..Default::default()
                 },
                 Button,
+                Text {
+                    string: "Click me".to_string(),
+                },
                 SensesCursor,
                 SensesClicks,
-                Container {
-                    children: vec![text],
-                },
+                // Container {
+                //     children: vec![text],
+                // },
             ))
             .id();
 
@@ -241,6 +251,7 @@ impl UiState {
 
         UiState {
             world,
+            flows: Flows::new(),
             style,
             card,
             counter,
@@ -279,6 +290,8 @@ struct App {
 
 impl App {
     fn render(&mut self) {
+        self.ui_state.flows.execute(&mut self.ui_state.world);
+
         let device = self.device.as_ref().unwrap();
         let queue = self.queue.as_mut().unwrap();
         let window = self.window.as_ref().unwrap();
@@ -323,7 +336,7 @@ impl App {
             });
         }
 
-        let mut draws: Vec<Draw> = Vec::new();
+        let mut draws: std::vec::Vec<Draw> = std::vec::Vec::new();
         Ui::draw_ui(&mut self.ui_state.world, &mut draws);
 
         let offscreen = self.offscreen.as_ref().unwrap().clone();
@@ -473,6 +486,7 @@ impl ApplicationHandler for App {
             let size = window.inner_size();
             surface.preferred_extent(mev::Extent2::new(size.width, size.height));
             surface.preferred_usage(mev::ImageUsage::TARGET);
+            surface.preferred_present_mode(mev::PresentMode::Fifo);
 
             self.window = Some(window);
             self.surface = Some(surface);

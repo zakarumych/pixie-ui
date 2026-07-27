@@ -78,6 +78,9 @@ pub struct Attributes {
 
     /// The brush used to draw the widget's text.
     pub text_brush: Option<Brush>,
+
+    /// The alignment of the widget's text.
+    pub text_align: Option<Align2>,
 }
 
 impl Attributes {
@@ -117,6 +120,9 @@ impl Attributes {
         }
         if let Some(text_brush) = other.text_brush {
             self.text_brush = Some(text_brush);
+        }
+        if let Some(text_align) = other.text_align {
+            self.text_align = Some(text_align);
         }
     }
 }

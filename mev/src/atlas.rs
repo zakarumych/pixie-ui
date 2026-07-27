@@ -54,8 +54,8 @@ fn round_up_32(bits: usize) -> usize {
 /// Builds an atlas texture for `font`, uploading it synchronously (creates its own
 /// one-off command buffer, submits, and waits for completion).
 pub fn build_atlas(queue: &mut mev::Queue, font: &Font) -> Result<Atlas, crate::Error> {
-    let glyph_w = font.bitmap.glyph_size.w.max(1);
-    let glyph_h = font.bitmap.glyph_size.h.max(1);
+    let glyph_w = font.bitmap.glyph_size.w.max(1) as u32;
+    let glyph_h = font.bitmap.glyph_size.h.max(1) as u32;
     let num_glyphs = (font.glyph_metrics.len() as u32).max(1);
 
     let cols = (num_glyphs as f64).sqrt().ceil().max(1.0) as u32;

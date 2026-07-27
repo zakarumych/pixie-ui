@@ -386,7 +386,7 @@ impl Renderer {
                     }
                 }
                 Draw::Text {
-                    rect,
+                    start,
                     font,
                     glyphs,
                     brush,
@@ -401,12 +401,14 @@ impl Renderer {
                         continue;
                     };
 
+                    let rect = font_data.glyphs_bbox(&glyphs[..]) + *start;
+
                     let resolved =
-                        resolve_brush(brush, *rect, |id| self.textures.get(&id).map(image_size));
+                        resolve_brush(brush, rect, |id| self.textures.get(&id).map(image_size));
 
                     let first = text_instances.len() as u32;
-                    let mut cursor_x = rect.lt.x as f32;
-                    let cursor_y = rect.lt.y as f32;
+                    let mut cursor_x = start.x as f32;
+                    let cursor_y = start.y as f32;
 
                     // Borrow ends before we push into `layers` / call `self.ensure_atlas` again.
                     let atlas = self.atlases.get(font).expect("atlas ensured above");

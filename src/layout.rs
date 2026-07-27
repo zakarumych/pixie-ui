@@ -150,7 +150,7 @@ fn measure_tree(
 
     if let Some(text) = text {
         if let Some(font) = ui.font(attrs.0.text_font.unwrap_or(ui.default_text_font())) {
-            content_size += text_rect(font, &*text.string).size();
+            content_size += font.text_bbox(&*text.string).size();
         }
     }
 
@@ -168,16 +168,6 @@ fn measure_tree(
         Size::ZERO
     } else {
         final_size
-    }
-}
-
-/// Offsets `align` within an available span `avail`, for an element of size `size`.
-/// Both are along the same axis, in the same units.
-fn align_offset(align: Align, avail: i32, size: i32) -> i32 {
-    match align {
-        Align::Start => 0,
-        Align::Center => (avail - size) / 2,
-        Align::End => avail - size,
     }
 }
 
@@ -266,7 +256,7 @@ fn arrange_tree(
             view,
             arranged,
         ),
-        None => (min_size.0.w as i32, min_size.0.h as i32),
+        None => (min_size.0.w, min_size.0.h),
     };
 
     let rect = match shrink_axes {
@@ -274,14 +264,14 @@ fn arrange_tree(
         Some((sx, sy)) => {
             let size = Size {
                 w: if sx {
-                    offer_w as u32
+                    offer_w
                 } else {
-                    occupied_w.max(min_size.0.w as i32) as u32
+                    occupied_w.max(min_size.0.w)
                 },
                 h: if sy {
-                    offer_h as u32
+                    offer_h
                 } else {
-                    occupied_h.max(min_size.0.h as i32) as u32
+                    occupied_h.max(min_size.0.h)
                 },
             };
             let final_rect = resolve_rect(offer, size, attrs.0.position, align);
@@ -344,8 +334,8 @@ fn resolve_size(
             let parent_w = (parent_rect.rb.x - parent_rect.lt.x).max(0);
             let parent_h = (parent_rect.rb.y - parent_rect.lt.y).max(0);
             Size {
-                w: apply_ratio(parent_w, rw).max(0).min(offer_w) as u32,
-                h: apply_ratio(parent_h, rh).max(0).min(offer_h) as u32,
+                w: apply_ratio(parent_w, rw).max(0).min(offer_w),
+                h: apply_ratio(parent_h, rh).max(0).min(offer_h),
             }
         }
         // Only reached here when both axes are stretched (the partially-stretched case is
@@ -353,16 +343,8 @@ fn resolve_size(
         Some(WidgetSize::Flexible {
             stretches: (sx, sy),
         }) => Size {
-            w: if sx {
-                offer_w.max(0) as u32
-            } else {
-                min_size.w
-            },
-            h: if sy {
-                offer_h.max(0) as u32
-            } else {
-                min_size.h
-            },
+            w: if sx { offer_w.max(0) } else { min_size.w },
+            h: if sy { offer_h.max(0) } else { min_size.h },
         },
         None => min_size,
     }
@@ -390,17 +372,7 @@ fn resolve_rect(offer: Rect, size: Size, position: Option<Pos>, align: Align2) -
             },
         }
     } else {
-        let offer_w = (offer.rb.x - offer.lt.x).max(0);
-        let offer_h = (offer.rb.y - offer.lt.y).max(0);
-        let x = offer.lt.x + align_offset(align.x, offer_w, size.w as i32);
-        let y = offer.lt.y + align_offset(align.y, offer_h, size.h as i32);
-        Rect {
-            lt: Pos { x, y },
-            rb: Pos {
-                x: x + size.w as i32,
-                y: y + size.h as i32,
-            },
-        }
+        align.in_rect(offer, size)
     }
 }
 
@@ -1191,26 +1163,6 @@ pub fn layout_system(world: &mut World) {
             );
         }
     }
-}
-
-fn text_rect(font: &Font, text: &str) -> Rect {
-    let mut rect = Rect::ZERO;
-    let mut cursor = Pos::ZERO;
-
-    for c in text.chars() {
-        if let Some(&glyph) = font.mapping.get(&c) {
-            let metrics = &font.glyph_metrics[glyph as usize];
-            let mut bbox = metrics.bbox;
-            bbox.lt.x += cursor.x;
-            bbox.lt.y += cursor.y;
-            bbox.rb.x += cursor.x;
-            bbox.rb.y += cursor.y;
-            rect = rect.union(&bbox);
-            cursor.x += metrics.advance.w as i32;
-        }
-    }
-
-    rect
 }
 
 #[cfg(test)]

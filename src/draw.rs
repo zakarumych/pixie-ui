@@ -4,7 +4,7 @@ use crate::{
     align::Align2,
     color::Color,
     font::FontId,
-    math::{Pos, Rect},
+    math::{Pos, Rect, Vec},
     text::Glyph,
     texture::TextureId,
 };
@@ -125,7 +125,7 @@ pub enum Draw<'a> {
 
     Text {
         /// The geometry of the rectangle in which the text will be drawn.
-        rect: Rect,
+        start: Vec,
 
         /// The font to be used for the text.
         font: FontId,
@@ -152,12 +152,12 @@ impl<'a> Draw<'a> {
                 stroke,
             },
             Draw::Text {
-                rect,
+                start,
                 font,
                 glyphs,
                 brush,
             } => Draw::Text {
-                rect,
+                start,
                 font,
                 glyphs: Cow::Owned(glyphs.into_owned()),
                 brush,

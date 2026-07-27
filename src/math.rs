@@ -13,6 +13,16 @@ impl Vec {
     pub const ZERO: Vec = Vec { x: 0, y: 0 };
 }
 
+impl From<Pos> for Vec {
+    #[inline]
+    fn from(value: Pos) -> Self {
+        Vec {
+            x: value.x,
+            y: value.y,
+        }
+    }
+}
+
 impl Add for Vec {
     type Output = Self;
 
@@ -63,6 +73,16 @@ impl Pos {
     pub const ZERO: Pos = Pos { x: 0, y: 0 };
 }
 
+impl From<Vec> for Pos {
+    #[inline]
+    fn from(value: Vec) -> Self {
+        Pos {
+            x: value.x,
+            y: value.y,
+        }
+    }
+}
+
 impl Add<Vec> for Pos {
     type Output = Self;
 
@@ -105,8 +125,8 @@ impl SubAssign<Vec> for Pos {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Size {
-    pub w: u32,
-    pub h: u32,
+    pub w: i32,
+    pub h: i32,
 }
 
 impl Size {
@@ -166,13 +186,35 @@ impl Rect {
 
     pub fn size(&self) -> Size {
         Size {
-            w: (self.rb.x.max(self.lt.x) - self.lt.x) as u32,
-            h: (self.rb.y.max(self.lt.y) - self.lt.y) as u32,
+            w: (self.rb.x.max(self.lt.x) - self.lt.x),
+            h: (self.rb.y.max(self.lt.y) - self.lt.y),
         }
     }
 
     pub fn contains(&self, pos: Pos) -> bool {
         pos.x >= self.lt.x && pos.x < self.rb.x && pos.y >= self.lt.y && pos.y < self.rb.y
+    }
+
+    pub fn from_pos_size(pos: Pos, size: Size) -> Rect {
+        Rect {
+            lt: pos,
+            rb: Pos {
+                x: pos.x + size.w,
+                y: pos.y + size.h,
+            },
+        }
+    }
+}
+
+impl Add<Vec> for Rect {
+    type Output = Self;
+
+    #[inline]
+    fn add(self, rhs: Vec) -> Self {
+        Rect {
+            lt: self.lt + rhs,
+            rb: self.rb + rhs,
+        }
     }
 }
 

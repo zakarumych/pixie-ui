@@ -384,11 +384,12 @@ pub const FONT_MONO_5X7: [[u8; 7]; 95] = [
     ],
 ];
 
-pub(super) const GLYPH_W: u32 = 5;
-pub(super) const GLYPH_H: u32 = 7;
+pub(super) const GLYPH_W: i32 = 5;
+pub(super) const GLYPH_H: i32 = 7;
 /// Bitmap canvas height, padded from GLYPH_H to make each glyph column exactly one byte tall.
-pub(super) const BITMAP_H: u32 = 8;
-pub(super) const BYTES_PER_GLYPH: usize = ((GLYPH_W * BITMAP_H).next_multiple_of(32) / 8) as usize;
+pub(super) const BITMAP_H: i32 = 8;
+pub(super) const BYTES_PER_GLYPH: usize =
+    (((GLYPH_W * BITMAP_H) as u32).next_multiple_of(32) / 8) as usize;
 
 pub(super) fn mono5x7_bitmap() -> Bitmap {
     let mut bitmap = vec![0u8; FONT_MONO_5X7.len() * BYTES_PER_GLYPH];
