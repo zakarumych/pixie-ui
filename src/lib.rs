@@ -3,6 +3,7 @@ pub mod button;
 pub mod color;
 pub mod draw;
 pub mod event;
+pub mod focus;
 pub mod font;
 pub mod layout;
 pub mod margin;

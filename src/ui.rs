@@ -8,7 +8,8 @@ use crate::{
     align::{Align, Align2},
     color::Color,
     draw::{Brush, Draw, Stroke},
-    event::PixieEvent,
+    event::{Key, PixieEvent},
+    focus::{FocusOnClick, collect_focus_cycle_order},
     font::{Font, FontId},
     layout::{Arranged, ContentLayout},
     margin::Margin,
@@ -34,6 +35,7 @@ pub struct Ui {
     default_text_color: Color,
     rect: Rect,
     input: InputState,
+    cycle_focus_key: Option<Key>,
 }
 
 impl Ui {
@@ -59,6 +61,7 @@ impl Ui {
             default_text_color: Color::WHITE,
             rect: Rect::ZERO,
             input: InputState::default(),
+            cycle_focus_key: Some(Key::Tab),
         }
     }
 
@@ -123,6 +126,22 @@ impl Ui {
 
     pub fn input(&self) -> &InputState {
         &self.input
+    }
+
+    pub fn set_focus(&mut self, id: EntityId) {
+        self.input.focused = Some(id);
+    }
+
+    pub fn focused(&self) -> Option<EntityId> {
+        self.input.focused
+    }
+
+    pub fn cycle_focus_key(&self) -> Option<Key> {
+        self.cycle_focus_key
+    }
+
+    pub fn set_cycle_focus_key(&mut self, key: Option<Key>) {
+        self.cycle_focus_key = key;
     }
 
     /// Walks every [`Widget`] entity and emits [`Draw`] commands describing how to render it,
@@ -255,6 +274,10 @@ fn draw_widget<'w, 'a>(
 /// requires [`crate::widget::SensesCursor`]; press/release requires
 /// [`crate::widget::SensesClicks`].
 ///
+/// Pressing the [`Ui::cycle_focus_key`] (if set) advances focus to the next
+/// [`FocusCycle`]-marked widget in tree order, wrapping to the first after the last.
+/// Releasing a click on a [`FocusOnClick`]-marked widget focuses it.
+///
 /// Returns every action emitted in response to this event — currently just a
 /// completed click (press and release both landing on the same widget), read
 /// off that widget's [`crate::action::OnClick<A>`] component, if present.
@@ -269,6 +292,7 @@ pub fn handle_event<A: 'static>(
     };
 
     let mut input = ui.input;
+    let cycle_focus_key = ui.cycle_focus_key;
     drop(ui);
 
     match event {
@@ -285,6 +309,10 @@ pub fn handle_event<A: 'static>(
             if let Some(id) = input.pressed
                 && input.hovered == Some(id)
             {
+                if world.get::<&FocusOnClick>(id).is_ok() {
+                    input.focused = Some(id);
+                }
+
                 if let Ok(mut on_click) = world.try_view_one::<&mut OnClick<Infallible>>(id) {
                     if let Some(on_click) = on_click.get_mut() {
                         on_click.invoke(world, id);
@@ -300,6 +328,20 @@ pub fn handle_event<A: 'static>(
                 }
             }
             input.pressed = None;
+        }
+        PixieEvent::KeyPressed(key) => {
+            if Some(key) == cycle_focus_key {
+                let order = collect_focus_cycle_order(world);
+                if !order.is_empty() {
+                    input.focused = match input
+                        .focused
+                        .and_then(|id| order.iter().position(|&e| e == id))
+                    {
+                        Some(index) => Some(order[(index + 1) % order.len()]),
+                        None => Some(order[0]),
+                    };
+                }
+            }
         }
     }
 
@@ -320,4 +362,139 @@ fn hit_test<M: edict::component::Component>(world: &World, pos: Pos) -> Option<E
         }
     }
     best.map(|(id, _)| id)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use super::*;
+    use crate::{
+        event::Key,
+        focus::FocusCycle,
+        math::Size,
+        widget::{SensesClicks, SensesCursor},
+    };
+
+    fn spawn_focus_cycle_widget(world: &mut World) -> EntityId {
+        world.spawn((Widget { parent: None }, FocusCycle)).id()
+    }
+
+    fn spawn_clickable(world: &mut World, focus_on_click: bool, rect: Rect) -> EntityId {
+        let id = world
+            .spawn((
+                Widget { parent: None },
+                SensesCursor,
+                SensesClicks,
+                Arranged { rect, layer: 0 },
+            ))
+            .id();
+        if focus_on_click {
+            world.insert(id, FocusOnClick).unwrap();
+        }
+        id
+    }
+
+    #[test]
+    fn tab_cycle_wraps_from_last_to_first() {
+        let mut world = World::new();
+        world.insert_resource(Ui::new());
+
+        let first = spawn_focus_cycle_widget(&mut world);
+        let last = spawn_focus_cycle_widget(&mut world);
+
+        world.get_resource_mut::<Ui>().unwrap().set_focus(last);
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::KeyPressed(Key::Tab)).count();
+
+        assert_eq!(world.get_resource::<Ui>().unwrap().focused(), Some(first));
+    }
+
+    #[test]
+    fn tab_cycle_with_nothing_focused_picks_first() {
+        let mut world = World::new();
+        world.insert_resource(Ui::new());
+
+        let first = spawn_focus_cycle_widget(&mut world);
+        let _second = spawn_focus_cycle_widget(&mut world);
+
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::KeyPressed(Key::Tab)).count();
+
+        assert_eq!(world.get_resource::<Ui>().unwrap().focused(), Some(first));
+    }
+
+    #[test]
+    fn cycle_focus_key_none_disables_tab_cycling() {
+        let mut world = World::new();
+        let mut ui = Ui::new();
+        ui.set_cycle_focus_key(None);
+        world.insert_resource(ui);
+
+        let _first = spawn_focus_cycle_widget(&mut world);
+        let _second = spawn_focus_cycle_widget(&mut world);
+
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::KeyPressed(Key::Tab)).count();
+
+        assert_eq!(world.get_resource::<Ui>().unwrap().focused(), None);
+    }
+
+    #[test]
+    fn button_released_focuses_focus_on_click_widget() {
+        let mut world = World::new();
+        world.insert_resource(Ui::new());
+
+        let rect = Rect::from_pos_size(Pos::ZERO, Size { w: 10, h: 10 });
+        let id = spawn_clickable(&mut world, true, rect);
+
+        let pos = Pos { x: 5, y: 5 };
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::CursorMoved { pos }).count();
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonPressed).count();
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonReleased).count();
+
+        assert_eq!(world.get_resource::<Ui>().unwrap().focused(), Some(id));
+    }
+
+    #[test]
+    fn button_released_ignores_widget_without_focus_on_click_marker() {
+        let mut world = World::new();
+        world.insert_resource(Ui::new());
+
+        let rect = Rect::from_pos_size(Pos::ZERO, Size { w: 10, h: 10 });
+        let _id = spawn_clickable(&mut world, false, rect);
+
+        let pos = Pos { x: 5, y: 5 };
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::CursorMoved { pos }).count();
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonPressed).count();
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonReleased).count();
+
+        assert_eq!(world.get_resource::<Ui>().unwrap().focused(), None);
+    }
+
+    #[test]
+    fn button_released_ignores_mismatched_press_hover() {
+        let mut world = World::new();
+        world.insert_resource(Ui::new());
+
+        let rect_a = Rect::from_pos_size(Pos::ZERO, Size { w: 10, h: 10 });
+        let rect_b = Rect::from_pos_size(Pos { x: 20, y: 20 }, Size { w: 10, h: 10 });
+        let _a = spawn_clickable(&mut world, true, rect_a);
+        let _b = spawn_clickable(&mut world, true, rect_b);
+
+        // Press on `a`, then move the cursor to hover over `b` before releasing.
+        let _ = handle_event::<Infallible>(
+            &mut world,
+            PixieEvent::CursorMoved { pos: Pos { x: 5, y: 5 } },
+        )
+        .count();
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonPressed).count();
+        let _ = handle_event::<Infallible>(
+            &mut world,
+            PixieEvent::CursorMoved {
+                pos: Pos { x: 25, y: 25 },
+            },
+        )
+        .count();
+        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonReleased).count();
+
+        assert_eq!(world.get_resource::<Ui>().unwrap().focused(), None);
+    }
 }
