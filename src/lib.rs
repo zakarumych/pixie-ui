@@ -10,6 +10,7 @@ pub mod math;
 pub mod style;
 pub mod text;
 pub mod texture;
+pub mod trigger;
 pub mod ui;
 pub mod widget;
 pub mod world;

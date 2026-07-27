@@ -1,4 +1,4 @@
-use std::{borrow::Cow, num::NonZeroU64};
+use std::{borrow::Cow, convert::Infallible, num::NonZeroU64};
 
 use edict::{entity::EntityId, query::Entities, world::World};
 use foldhash::fast::RandomState;
@@ -16,6 +16,7 @@ use crate::{
     style::{InputState, ResolvedAttributes},
     text::{Glyph, Text},
     texture::TextureId,
+    trigger::OnClick,
     widget::{Container, SensesClicks, SensesCursor, Widget},
 };
 
@@ -252,28 +253,61 @@ fn draw_widget<'w, 'a>(
 /// against widgets' [`Arranged`] rects (top-most/deepest layer wins on overlap —
 /// z-fighting among widgets at the same layer is not resolved here). Hover
 /// requires [`crate::widget::SensesCursor`]; press/release requires
-/// [`crate::widget::SensesClicks`]. No click callbacks yet — this only updates
-/// `Ui`'s internal hover/press state; callers can read it back via
-/// [`Ui::hovered`]/[`Ui::pressed`] to build their own click handling.
-pub fn handle_event(world: &World, event: PixieEvent) {
-    let Some(mut ui) = world.get_resource_mut::<Ui>() else {
-        return;
+/// [`crate::widget::SensesClicks`].
+///
+/// Returns every action emitted in response to this event — currently just a
+/// completed click (press and release both landing on the same widget), read
+/// off that widget's [`crate::action::OnClick<A>`] component, if present.
+pub fn handle_event<A: 'static>(
+    world: &mut World,
+    event: PixieEvent,
+) -> impl Iterator<Item = A> + use<A> {
+    let mut actions = smallvec::SmallVec::<[A; 1]>::new();
+
+    let Some(ui) = world.get_resource_mut::<Ui>() else {
+        return actions.into_iter();
     };
+
+    let mut input = ui.input;
+    drop(ui);
 
     match event {
         PixieEvent::CursorMoved { pos } => {
-            ui.input.cursor = Some(pos);
-            ui.input.hovered = hit_test::<SensesCursor>(world, pos);
+            input.cursor = Some(pos);
+            input.hovered = hit_test::<SensesCursor>(world, pos);
         }
         PixieEvent::ButtonPressed => {
-            if let Some(pos) = ui.input.cursor {
-                ui.input.pressed = hit_test::<SensesClicks>(world, pos);
+            if let Some(pos) = input.cursor {
+                input.pressed = hit_test::<SensesClicks>(world, pos);
             }
         }
         PixieEvent::ButtonReleased => {
-            ui.input.pressed = None;
+            if let Some(id) = input.pressed
+                && input.hovered == Some(id)
+            {
+                if let Ok(mut on_click) = world.try_view_one::<&mut OnClick<Infallible>>(id) {
+                    if let Some(on_click) = on_click.get_mut() {
+                        on_click.invoke(world, id);
+                    }
+                }
+
+                if core::any::TypeId::of::<A>() != core::any::TypeId::of::<Infallible>() {
+                    if let Ok(mut on_click) = world.try_view_one::<&mut OnClick<A>>(id) {
+                        if let Some(on_click) = on_click.get_mut() {
+                            actions.extend(on_click.invoke(world, id));
+                        }
+                    }
+                }
+            }
+            input.pressed = None;
         }
     }
+
+    if let Some(mut ui) = world.get_resource_mut::<Ui>() {
+        ui.input = input;
+    }
+
+    actions.into_iter()
 }
 
 /// Returns the entity with the deepest `Arranged.layer` (i.e. visually top-most)

@@ -1,9 +1,4 @@
-use edict::{
-    entity::EntityId,
-    flow::{FlowWorld, Flows},
-    query::With,
-    world::World,
-};
+use edict::{entity::EntityId, query::With, world::World};
 use mev::Arguments as _;
 use pixie_ui::{
     align::Align,
@@ -12,9 +7,10 @@ use pixie_ui::{
     draw::{Brush, Draw},
     event::PixieEvent,
     layout::layout_system,
-    math::{Pos, Rect, Size, Vec},
+    math::{Pos, Rect, Size},
     style::{Attributes, AttributesUpdate, Style, WidgetSize},
     text::Text,
+    trigger::{OnClick, invoke},
     ui::Ui,
     widget::{Container, RootWidget, SensesClicks, SensesCursor, Widget, sync_widget_parents},
 };
@@ -138,11 +134,8 @@ impl AttributesUpdate for ButtonHoverStyle {
 
 struct UiState {
     world: World,
-    flows: Flows,
     style: Style,
     card: EntityId,
-    counter: EntityId,
-    button: EntityId,
 }
 
 impl UiState {
@@ -166,30 +159,6 @@ impl UiState {
         //         },
         //     ))
         //     .id();
-
-        let button = world
-            .spawn((
-                Widget { parent: None },
-                Attributes {
-                    position: Some(BUTTON_LOCAL_POS),
-                    size: Some(WidgetSize::Fixed(BUTTON_SIZE)),
-                    text_brush: Some(Brush::Solid(Color::WHITE)),
-                    text_align: Some(Align::Center.into()),
-                    // text_font: Some(FontId(1)),
-                    content_align: Some(Align::Center.into()),
-                    ..Default::default()
-                },
-                Button,
-                Text {
-                    string: "Click me".to_string(),
-                },
-                SensesCursor,
-                SensesClicks,
-                // Container {
-                //     children: vec![text],
-                // },
-            ))
-            .id();
 
         let title = world
             .spawn((
@@ -216,6 +185,40 @@ impl UiState {
                 Text {
                     string: "Clicks: 0".to_string(),
                 },
+            ))
+            .id();
+
+        let mut clicks = 0;
+
+        let button = world
+            .spawn((
+                Widget { parent: None },
+                Attributes {
+                    position: Some(BUTTON_LOCAL_POS),
+                    size: Some(WidgetSize::Fixed(BUTTON_SIZE)),
+                    text_brush: Some(Brush::Solid(Color::WHITE)),
+                    text_align: Some(Align::Center.into()),
+                    // text_font: Some(FontId(1)),
+                    content_align: Some(Align::Center.into()),
+                    ..Default::default()
+                },
+                Button,
+                Text {
+                    string: "Click me".to_string(),
+                },
+                SensesCursor,
+                SensesClicks,
+                // OnClick(emit(Action::Increment)),
+                OnClick(invoke(move |world, _| {
+                    let Ok(mut view) = world.try_view_one::<&mut Text>(counter) else {
+                        return;
+                    };
+                    let Some(text) = view.get_mut() else {
+                        return;
+                    };
+                    text.string = format!("Clicks: {}", clicks + 1);
+                    clicks += 1;
+                })),
             ))
             .id();
 
@@ -249,20 +252,7 @@ impl UiState {
             },
         ));
 
-        UiState {
-            world,
-            flows: Flows::new(),
-            style,
-            card,
-            counter,
-            button,
-        }
-    }
-
-    fn set_counter_text(&mut self, text: String) {
-        if let Ok(t) = self.world.get::<&mut Text>(self.counter) {
-            t.string = text;
-        }
+        UiState { world, style, card }
     }
 
     fn set_card_pos(&mut self, pos: Pos) {
@@ -275,7 +265,6 @@ impl UiState {
 struct App {
     renderer: Option<pixie_ui_mev::Renderer>,
     ui_state: UiState,
-    clicks: u32,
     queue: Option<mev::Queue>,
     surface: Option<mev::Surface>,
     window: Option<winit::window::Window>,
@@ -290,8 +279,6 @@ struct App {
 
 impl App {
     fn render(&mut self) {
-        self.ui_state.flows.execute(&mut self.ui_state.world);
-
         let device = self.device.as_ref().unwrap();
         let queue = self.queue.as_mut().unwrap();
         let window = self.window.as_ref().unwrap();
@@ -471,6 +458,8 @@ impl App {
     }
 }
 
+enum Action {}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self.window.is_none() {
@@ -506,32 +495,19 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        if let Some(mut pevent) = pixie_ui_winit::convert_event(&event) {
+        if let Some(mut event) = pixie_ui_winit::convert_event(&event) {
             // `convert_event` reports physical window pixels; widget layout/hit-testing
             // happens in virtual (pre-upscale) pixels, so cursor positions need the same
             // `/ SCALE` the render path applies to the window size.
-            if let PixieEvent::CursorMoved { pos } = &mut pevent {
+            if let PixieEvent::CursorMoved { pos } = &mut event {
                 pos.x /= SCALE as i32;
                 pos.y /= SCALE as i32;
             }
 
-            let (was_pressed, was_hovered) = {
-                let ui = self
-                    .ui_state
-                    .world
-                    .get_resource::<Ui>()
-                    .expect("Ui resource missing");
+            let world = &mut self.ui_state.world;
 
-                (ui.input().pressed, ui.input().hovered)
-            };
-            pixie_ui::ui::handle_event(&self.ui_state.world, pevent);
-            if matches!(pevent, PixieEvent::ButtonReleased)
-                && was_pressed == Some(self.ui_state.button)
-                && was_hovered == Some(self.ui_state.button)
-            {
-                self.clicks += 1;
-                self.ui_state
-                    .set_counter_text(format!("Clicks: {}", self.clicks));
+            for action in pixie_ui::ui::handle_event::<Action>(world, event) {
+                match action {}
             }
         }
 
@@ -573,7 +549,6 @@ fn main() {
         device: Some(device),
         renderer: None,
         ui_state: UiState::new(),
-        clicks: 0,
         offscreen: None,
         offscreen_size: (0, 0),
         blit_pipeline: None,
