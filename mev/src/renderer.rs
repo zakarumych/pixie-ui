@@ -268,7 +268,6 @@ impl Renderer {
     }
 
     /// Draws `draws` onto `image`, compositing over its existing content (it is not cleared).
-    /// Submits synchronously: the GPU work is complete by the time this call returns.
     pub fn render(
         &mut self,
         queue: &mut mev::Queue,

@@ -1,3 +1,5 @@
+use crate::math::{Pos, Rect, Size};
+
 /// Margin for a widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Margin {
@@ -47,6 +49,26 @@ impl Margin {
             left: horizontal,
             bottom: vertical,
             right: horizontal,
+        }
+    }
+
+    pub const fn size(&self) -> Size {
+        Size {
+            w: self.left as i32 + self.right as i32,
+            h: self.top as i32 + self.bottom as i32,
+        }
+    }
+
+    pub fn shrink(&self, rect: Rect) -> Rect {
+        Rect {
+            lt: Pos {
+                x: rect.lt.x + self.left as i32,
+                y: rect.lt.y + self.top as i32,
+            },
+            rb: Pos {
+                x: rect.rb.x - self.right as i32,
+                y: rect.rb.y - self.bottom as i32,
+            },
         }
     }
 }

@@ -153,6 +153,12 @@ impl AddAssign for Size {
     }
 }
 
+impl Size {
+    pub fn fits(self, other: Size) -> bool {
+        self.w >= other.w && self.h >= other.h
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rect {
     pub lt: Pos,

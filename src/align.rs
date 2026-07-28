@@ -39,6 +39,51 @@ pub struct Align2 {
 }
 
 impl Align2 {
+    pub const CENTER: Align2 = Align2 {
+        x: Align::Center,
+        y: Align::Center,
+    };
+
+    pub const LEFT: Align2 = Align2 {
+        x: Align::Start,
+        y: Align::Center,
+    };
+
+    pub const RIGHT: Align2 = Align2 {
+        x: Align::End,
+        y: Align::Center,
+    };
+
+    pub const TOP: Align2 = Align2 {
+        x: Align::Center,
+        y: Align::Start,
+    };
+
+    pub const BOTTOM: Align2 = Align2 {
+        x: Align::Center,
+        y: Align::End,
+    };
+
+    pub const TOP_LEFT: Align2 = Align2 {
+        x: Align::Start,
+        y: Align::Start,
+    };
+
+    pub const TOP_RIGHT: Align2 = Align2 {
+        x: Align::End,
+        y: Align::Start,
+    };
+
+    pub const BOTTOM_LEFT: Align2 = Align2 {
+        x: Align::Start,
+        y: Align::End,
+    };
+
+    pub const BOTTOM_RIGHT: Align2 = Align2 {
+        x: Align::End,
+        y: Align::End,
+    };
+
     /// Returns the offset needed to align an element of `size` within a container of `available` space.
     pub fn offset(self, available: Size, size: Size) -> Vec {
         Vec {
@@ -56,10 +101,7 @@ impl Align2 {
     /// Returns a rectangle of specified size aligned within an available rectangle.
     pub fn in_rect(self, available: Rect, size: Size) -> Rect {
         let offset = self.offset(available.size(), size);
-        Rect {
-            lt: available.lt + offset,
-            rb: available.rb + offset,
-        }
+        Rect::from_pos_size(available.lt + offset, size)
     }
 }
 

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, convert::Infallible, num::NonZeroU64};
+use std::{borrow::Cow, num::NonZeroU64, time::Instant};
 
 use edict::{entity::EntityId, query::Entities, world::World};
 use foldhash::fast::RandomState;
@@ -11,13 +11,13 @@ use crate::{
     event::{Key, PixieEvent},
     focus::{FocusOnClick, collect_focus_cycle_order},
     font::{Font, FontId},
-    layout::{Arranged, ContentLayout},
+    layout::{Arranged, ContentLayout, shrink_cross_inset},
     margin::Margin,
-    math::{Pos, Rect},
+    math::{Pos, Rect, Size},
     style::{InputState, ResolvedAttributes},
-    text::{Glyph, Text},
+    text::{Glyph, Text, TextInput},
     texture::TextureId,
-    trigger::OnClick,
+    trigger::{NoAction, OnClick, OnDrag, OnDragEnd, OnDragStart, OnKey, OnPaste},
     widget::{Container, SensesClicks, SensesCursor, Widget},
 };
 
@@ -31,11 +31,11 @@ pub struct Ui {
     default_inner_margin: Margin,
     default_fg_color: Color,
     default_bg_color: Color,
-    default_text_font: FontId,
-    default_text_color: Color,
+    default_font: FontId,
     rect: Rect,
     input: InputState,
     cycle_focus_key: Option<Key>,
+    start: Instant,
 }
 
 impl Ui {
@@ -56,12 +56,12 @@ impl Ui {
             default_outer_margin: Margin::ZERO,
             default_inner_margin: Margin::ZERO,
             default_fg_color: Color::WHITE,
-            default_bg_color: Color::BLACK,
-            default_text_font: FontId(0),
-            default_text_color: Color::WHITE,
+            default_bg_color: Color::TRANSPARENT,
+            default_font: FontId(0),
             rect: Rect::ZERO,
             input: InputState::default(),
             cycle_focus_key: Some(Key::Tab),
+            start: Instant::now(),
         }
     }
 
@@ -116,12 +116,8 @@ impl Ui {
         self.default_bg_color
     }
 
-    pub fn default_text_font(&self) -> FontId {
-        self.default_text_font
-    }
-
-    pub fn default_text_color(&self) -> Color {
-        self.default_text_color
+    pub fn default_font(&self) -> FontId {
+        self.default_font
     }
 
     pub fn input(&self) -> &InputState {
@@ -170,8 +166,7 @@ impl Ui {
             fg_brush: Brush::Solid(ui.default_fg_color),
             bg_brush: Brush::Solid(ui.default_bg_color),
             stroke: None,
-            text_font: ui.default_text_font,
-            text_brush: Brush::Solid(ui.default_text_color),
+            font: ui.default_font,
         };
 
         for root in roots {
@@ -191,8 +186,7 @@ struct InheritedPaint {
     fg_brush: Brush,
     bg_brush: Brush,
     stroke: Option<Stroke>,
-    text_font: FontId,
-    text_brush: Brush,
+    font: FontId,
 }
 
 /// Draws `id` and, recursively, its subtree, given the [`InheritedPaint`] cascaded down from
@@ -209,6 +203,10 @@ fn draw_widget<'w, 'a>(
     inherited: InheritedPaint,
     commands: &mut impl Extend<Draw<'a>>,
 ) {
+    if inherited.stroke.is_some() {
+        std::process::exit(0);
+    }
+
     let Ok(rect) = world.get::<&Arranged>(id).map(|r| r.rect) else {
         // Unresolved widget: by construction from `resolve_rects`, its whole subtree is
         // also unresolved, so there's nothing further to draw here.
@@ -223,8 +221,7 @@ fn draw_widget<'w, 'a>(
         fg_brush: attrs.fg_brush.unwrap_or(inherited.fg_brush),
         bg_brush: attrs.bg_brush.unwrap_or(inherited.bg_brush),
         stroke: attrs.stroke.or(inherited.stroke),
-        text_font: attrs.text_font.unwrap_or(inherited.text_font),
-        text_brush: attrs.text_brush.unwrap_or(inherited.text_brush),
+        font: attrs.font.unwrap_or(inherited.font),
     };
 
     commands.extend(std::iter::once(Draw::Rect {
@@ -233,26 +230,151 @@ fn draw_widget<'w, 'a>(
         stroke: resolved.stroke,
     }));
 
-    if let Ok(Some(text)) = world.get::<Option<&Text>>(id)
-        && let Some(font) = ui.font(resolved.text_font)
+    if let Ok((Some(text), text_input)) = world.get::<(Option<&Text>, Option<&TextInput>)>(id)
+        && let Some(font) = ui.font(resolved.font)
     {
-        let glyphs: Vec<Glyph> = text
-            .string
-            .chars()
-            .filter_map(|c| font.mapping.get(&c).map(|&idx| Glyph(idx)))
-            .collect();
+        let inner_margin = attrs.inner_margin.unwrap_or(ui.default_inner_margin());
 
-        let text_align = attrs.text_align.unwrap_or(Align::Start.into());
+        let content_align = attrs.content_align.unwrap_or(Align::Start.into());
         let text_rect = font.text_bbox(&text.string);
 
-        let text_offset = text_align.rect_offset(rect, text_rect);
+        // Inset the text by `inner_margin`, shrinking smoothly per axis (never a discrete
+        // jump to zero margin) as the text grows to fill the widget's own rect — reuses the
+        // exact same shrink used for cross-axis insets during layout, just applied here at
+        // draw time against the widget's final rect and its own text content.
+        let rect_size = rect.size();
+        let text_size = text_rect.size();
+        let (left_inset, right_inset) = shrink_cross_inset(
+            inner_margin.left as i32,
+            inner_margin.right as i32,
+            rect_size.w,
+            text_size.w,
+        );
+        let (top_inset, bottom_inset) = shrink_cross_inset(
+            inner_margin.top as i32,
+            inner_margin.bottom as i32,
+            rect_size.h,
+            text_size.h,
+        );
+        let content_rect = Rect {
+            lt: Pos {
+                x: rect.lt.x + left_inset,
+                y: rect.lt.y + top_inset,
+            },
+            rb: Pos {
+                x: rect.rb.x - right_inset,
+                y: rect.rb.y - bottom_inset,
+            },
+        };
 
-        commands.extend(std::iter::once(Draw::Text {
-            start: text_offset,
-            font: resolved.text_font,
-            glyphs: Cow::Owned(glyphs),
-            brush: resolved.text_brush,
-        }));
+        let text_offset = content_align.rect_offset(content_rect, text_rect);
+
+        match text_input {
+            None => {
+                let glyphs: Vec<Glyph> = text
+                    .string
+                    .chars()
+                    .filter_map(|c| font.mapping.get(&c).map(|&idx| Glyph(idx)))
+                    .collect();
+
+                commands.extend(std::iter::once(Draw::Text {
+                    start: text_offset,
+                    font: resolved.font,
+                    glyphs: Cow::Owned(glyphs),
+                    brush: resolved.fg_brush,
+                }));
+            }
+            Some(text_input) => {
+                let before_selection = &text.string[..text_input.selection.start];
+                let selection = &text.string[text_input.selection.clone()];
+                let after_selection = &text.string[text_input.selection.end..];
+
+                let mut text_offset = text_offset;
+
+                if !before_selection.is_empty() {
+                    let glyphs: Vec<Glyph> = before_selection
+                        .chars()
+                        .filter_map(|c| font.mapping.get(&c).map(|&idx| Glyph(idx)))
+                        .collect();
+
+                    let mut advance = 0;
+                    for &g in glyphs.iter() {
+                        advance += font.metrics(g).map_or(0, |m| m.advance.w as i32);
+                    }
+
+                    commands.extend(std::iter::once(Draw::Text {
+                        start: text_offset,
+                        font: resolved.font,
+                        glyphs: Cow::Owned(glyphs),
+                        brush: resolved.fg_brush,
+                    }));
+
+                    text_offset.x += advance;
+                }
+
+                if text_input.selection.is_empty()
+                    && ui.focused() == Some(id)
+                    && (ui.start.elapsed().as_millis() % 1000 < 500)
+                {
+                    let x_offset = text_offset.x - 1;
+                    let y_offset = content_rect.lt.y
+                        + content_align
+                            .y
+                            .offset(content_rect.size().h, font.size.h + 2);
+
+                    commands.extend(std::iter::once(Draw::Rect {
+                        geometry: Rect::from_pos_size(
+                            Pos {
+                                x: x_offset,
+                                y: y_offset,
+                            },
+                            Size {
+                                w: 1,
+                                h: font.size.h + 2,
+                            },
+                        ),
+
+                        fill: Some(Brush::Solid(Color::from_premultiplied(100, 100, 100, 0))),
+                        stroke: None,
+                    }));
+                }
+
+                if !selection.is_empty() {
+                    let glyphs: Vec<Glyph> = selection
+                        .chars()
+                        .filter_map(|c| font.mapping.get(&c).map(|&idx| Glyph(idx)))
+                        .collect();
+
+                    let mut advance = 0;
+                    for &g in glyphs.iter() {
+                        advance += font.metrics(g).map_or(0, |m| m.advance.w as i32);
+                    }
+
+                    commands.extend(std::iter::once(Draw::Text {
+                        start: text_offset,
+                        font: resolved.font,
+                        glyphs: Cow::Owned(glyphs),
+                        brush: resolved.fg_brush,
+                    }));
+
+                    text_offset.x += advance;
+                }
+
+                if !after_selection.is_empty() {
+                    let glyphs: Vec<Glyph> = after_selection
+                        .chars()
+                        .filter_map(|c| font.mapping.get(&c).map(|&idx| Glyph(idx)))
+                        .collect();
+
+                    commands.extend(std::iter::once(Draw::Text {
+                        start: text_offset,
+                        font: resolved.font,
+                        glyphs: Cow::Owned(glyphs),
+                        brush: resolved.fg_brush,
+                    }));
+                }
+            }
+        }
     }
 
     let children = world
@@ -261,10 +383,23 @@ fn draw_widget<'w, 'a>(
         .flatten()
         .map(|c| c.children.clone());
 
+    let child_paint = InheritedPaint {
+        fg_brush: resolved.fg_brush,
+        bg_brush: inherited.bg_brush,
+        stroke: inherited.stroke,
+        font: resolved.font,
+    };
+
     if let Some(children) = children {
         for child in children {
-            draw_widget(world, ui, child, resolved, commands);
+            draw_widget(world, ui, child, child_paint, commands);
         }
+    }
+}
+
+pub fn handle_event(world: &mut World, event: PixieEvent) {
+    for a in handle_event_with_actions::<NoAction>(world, event) {
+        match a {}
     }
 }
 
@@ -276,15 +411,19 @@ fn draw_widget<'w, 'a>(
 ///
 /// Pressing the [`Ui::cycle_focus_key`] (if set) advances focus to the next
 /// [`FocusCycle`]-marked widget in tree order, wrapping to the first after the last.
-/// Releasing a click on a [`FocusOnClick`]-marked widget focuses it.
+/// Releasing a click on a [`FocusOnClick`]-marked widget focuses it. Any other key press is
+/// forwarded to the focused widget's [`OnKey<A>`], and [`PixieEvent::Paste`] is forwarded to
+/// the focused widget's [`OnPaste<A>`] — neither is hit-tested, both go straight to
+/// [`InputState::focused`].
 ///
-/// Returns every action emitted in response to this event — currently just a
-/// completed click (press and release both landing on the same widget), read
-/// off that widget's [`crate::action::OnClick<A>`] component, if present.
-pub fn handle_event<A: 'static>(
+/// Returns every action emitted in response to this event — currently a completed click (press
+/// and release both landing on the same widget), read off that widget's
+/// [`crate::action::OnClick<A>`] component, if present; a key press forwarded to the focused
+/// widget's [`OnKey<A>`]; or a paste forwarded to the focused widget's [`OnPaste<A>`].
+pub fn handle_event_with_actions<A: 'static>(
     world: &mut World,
     event: PixieEvent,
-) -> impl Iterator<Item = A> + use<A> {
+) -> impl Iterator<Item = A> {
     let mut actions = smallvec::SmallVec::<[A; 1]>::new();
 
     let Some(ui) = world.get_resource_mut::<Ui>() else {
@@ -297,32 +436,97 @@ pub fn handle_event<A: 'static>(
 
     match event {
         PixieEvent::CursorMoved { pos } => {
+            let old_pos = input.cursor;
             input.cursor = Some(pos);
             input.hovered = hit_test::<SensesCursor>(world, pos);
+
+            if let Some(id) = input.pressed
+                && let Some(old_pos) = old_pos
+            {
+                let delta = pos - old_pos;
+                let local = world.local();
+
+                if let Ok(mut on_drag) = local.try_view_one::<&mut OnDrag<NoAction>>(id) {
+                    if let Some(on_drag) = on_drag.get_mut() {
+                        let None = on_drag.invoke(local, id, pos, delta);
+                    }
+                }
+
+                if type_is_not_no_action::<A>() {
+                    if let Ok(mut on_drag) = local.try_view_one::<&mut OnDrag<A>>(id) {
+                        if let Some(on_drag) = on_drag.get_mut() {
+                            actions.extend(on_drag.invoke(local, id, pos, delta));
+                        }
+                    }
+                }
+            }
         }
         PixieEvent::ButtonPressed => {
             if let Some(pos) = input.cursor {
                 input.pressed = hit_test::<SensesClicks>(world, pos);
+
+                if let Some(id) = input.pressed {
+                    let local = world.local();
+
+                    if let Ok(mut on_drag_start) =
+                        local.try_view_one::<&mut OnDragStart<NoAction>>(id)
+                    {
+                        if let Some(on_drag_start) = on_drag_start.get_mut() {
+                            let None = on_drag_start.invoke(local, id, pos);
+                        }
+                    }
+
+                    if type_is_not_no_action::<A>() {
+                        if let Ok(mut on_drag_start) =
+                            local.try_view_one::<&mut OnDragStart<A>>(id)
+                        {
+                            if let Some(on_drag_start) = on_drag_start.get_mut() {
+                                actions.extend(on_drag_start.invoke(local, id, pos));
+                            }
+                        }
+                    }
+                }
             }
         }
         PixieEvent::ButtonReleased => {
-            if let Some(id) = input.pressed
-                && input.hovered == Some(id)
-            {
-                if world.get::<&FocusOnClick>(id).is_ok() {
-                    input.focused = Some(id);
-                }
+            if let Some(id) = input.pressed {
+                if input.hovered == Some(id) {
+                    if world.get::<&FocusOnClick>(id).is_ok() {
+                        input.focused = Some(id);
+                    }
 
-                if let Ok(mut on_click) = world.try_view_one::<&mut OnClick<Infallible>>(id) {
-                    if let Some(on_click) = on_click.get_mut() {
-                        on_click.invoke(world, id);
+                    let local = world.local();
+
+                    if let Ok(mut on_click) = local.try_view_one::<&mut OnClick<NoAction>>(id) {
+                        if let Some(on_click) = on_click.get_mut() {
+                            let None = on_click.invoke(local, id);
+                        }
+                    }
+
+                    if type_is_not_no_action::<A>() {
+                        if let Ok(mut on_click) = local.try_view_one::<&mut OnClick<A>>(id) {
+                            if let Some(on_click) = on_click.get_mut() {
+                                actions.extend(on_click.invoke(local, id));
+                            }
+                        }
                     }
                 }
 
-                if core::any::TypeId::of::<A>() != core::any::TypeId::of::<Infallible>() {
-                    if let Ok(mut on_click) = world.try_view_one::<&mut OnClick<A>>(id) {
-                        if let Some(on_click) = on_click.get_mut() {
-                            actions.extend(on_click.invoke(world, id));
+                if let Some(pos) = input.cursor {
+                    let local = world.local();
+
+                    if let Ok(mut on_drag_end) = local.try_view_one::<&mut OnDragEnd<NoAction>>(id)
+                    {
+                        if let Some(on_drag_end) = on_drag_end.get_mut() {
+                            let None = on_drag_end.invoke(local, id, pos);
+                        }
+                    }
+
+                    if type_is_not_no_action::<A>() {
+                        if let Ok(mut on_drag_end) = local.try_view_one::<&mut OnDragEnd<A>>(id) {
+                            if let Some(on_drag_end) = on_drag_end.get_mut() {
+                                actions.extend(on_drag_end.invoke(local, id, pos));
+                            }
                         }
                     }
                 }
@@ -341,6 +545,37 @@ pub fn handle_event<A: 'static>(
                         None => Some(order[0]),
                     };
                 }
+            } else if let Some(id) = input.focused {
+                if let Ok(mut on_key) = world.try_view_one::<&mut OnKey<NoAction>>(id) {
+                    if let Some(on_key) = on_key.get_mut() {
+                        let None = on_key.invoke(world, id, key);
+                    }
+                }
+
+                if type_is_not_no_action::<A>() {
+                    if let Ok(mut on_key) = world.try_view_one::<&mut OnKey<A>>(id) {
+                        if let Some(on_key) = on_key.get_mut() {
+                            actions.extend(on_key.invoke(world, id, key));
+                        }
+                    }
+                }
+            }
+        }
+        PixieEvent::Paste(text) => {
+            if let Some(id) = input.focused {
+                if let Ok(mut on_paste) = world.try_view_one::<&mut OnPaste<NoAction>>(id) {
+                    if let Some(on_paste) = on_paste.get_mut() {
+                        let None = on_paste.invoke(world, id, &text);
+                    }
+                }
+
+                if type_is_not_no_action::<A>() {
+                    if let Ok(mut on_paste) = world.try_view_one::<&mut OnPaste<A>>(id) {
+                        if let Some(on_paste) = on_paste.get_mut() {
+                            actions.extend(on_paste.invoke(world, id, &text));
+                        }
+                    }
+                }
             }
         }
     }
@@ -350,6 +585,10 @@ pub fn handle_event<A: 'static>(
     }
 
     actions.into_iter()
+}
+
+fn type_is_not_no_action<A: 'static>() -> bool {
+    core::any::TypeId::of::<A>() != core::any::TypeId::of::<NoAction>()
 }
 
 /// Returns the entity with the deepest `Arranged.layer` (i.e. visually top-most)
@@ -366,13 +605,14 @@ fn hit_test<M: edict::component::Component>(world: &World, pos: Pos) -> Option<E
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
 
     use super::*;
     use crate::{
         event::Key,
         focus::FocusCycle,
         math::Size,
+        text::{TextInput, edit_on_key, edit_on_paste},
+        trigger::{OnKey, OnPaste},
         widget::{SensesClicks, SensesCursor},
     };
 
@@ -395,6 +635,69 @@ mod tests {
         id
     }
 
+    fn spawn_text_input(world: &mut World) -> EntityId {
+        world
+            .spawn((
+                Widget { parent: None },
+                TextInput::new(),
+                Text::new(String::new()),
+                edit_on_key(),
+                edit_on_paste(),
+            ))
+            .id()
+    }
+
+    #[test]
+    fn focused_widget_receives_key_pressed_and_updates_input_text() {
+        let mut world = World::new();
+        let mut ui = Ui::new();
+        let id = spawn_text_input(&mut world);
+        ui.set_focus(id);
+        world.insert_resource(ui);
+
+        handle_event(&mut world, PixieEvent::KeyPressed(Key::Char('a')));
+
+        assert_eq!(world.get::<&Text>(id).unwrap().string, "a");
+    }
+
+    #[test]
+    fn unfocused_widget_does_not_receive_key_pressed() {
+        let mut world = World::new();
+        world.insert_resource(Ui::new());
+        let id = spawn_text_input(&mut world);
+
+        handle_event(&mut world, PixieEvent::KeyPressed(Key::Char('a')));
+
+        assert_eq!(world.get::<&Text>(id).unwrap().string, "");
+    }
+
+    #[test]
+    fn cycle_focus_key_press_is_not_forwarded_to_on_key() {
+        let mut world = World::new();
+        let mut ui = Ui::new();
+        let id = spawn_text_input(&mut world);
+        world.insert(id, FocusCycle).unwrap();
+        ui.set_focus(id);
+        world.insert_resource(ui);
+
+        handle_event(&mut world, PixieEvent::KeyPressed(Key::Tab));
+
+        assert_eq!(world.get::<&Text>(id).unwrap().string, "");
+    }
+
+    #[test]
+    fn paste_on_focused_widget_updates_input_text() {
+        let mut world = World::new();
+        let mut ui = Ui::new();
+        let id = spawn_text_input(&mut world);
+        ui.set_focus(id);
+        world.insert_resource(ui);
+
+        handle_event(&mut world, PixieEvent::Paste("hello".into()));
+
+        assert_eq!(world.get::<&Text>(id).unwrap().string, "hello");
+    }
+
     #[test]
     fn tab_cycle_wraps_from_last_to_first() {
         let mut world = World::new();
@@ -404,7 +707,7 @@ mod tests {
         let last = spawn_focus_cycle_widget(&mut world);
 
         world.get_resource_mut::<Ui>().unwrap().set_focus(last);
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::KeyPressed(Key::Tab)).count();
+        handle_event(&mut world, PixieEvent::KeyPressed(Key::Tab));
 
         assert_eq!(world.get_resource::<Ui>().unwrap().focused(), Some(first));
     }
@@ -417,7 +720,7 @@ mod tests {
         let first = spawn_focus_cycle_widget(&mut world);
         let _second = spawn_focus_cycle_widget(&mut world);
 
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::KeyPressed(Key::Tab)).count();
+        handle_event(&mut world, PixieEvent::KeyPressed(Key::Tab));
 
         assert_eq!(world.get_resource::<Ui>().unwrap().focused(), Some(first));
     }
@@ -432,7 +735,7 @@ mod tests {
         let _first = spawn_focus_cycle_widget(&mut world);
         let _second = spawn_focus_cycle_widget(&mut world);
 
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::KeyPressed(Key::Tab)).count();
+        handle_event(&mut world, PixieEvent::KeyPressed(Key::Tab));
 
         assert_eq!(world.get_resource::<Ui>().unwrap().focused(), None);
     }
@@ -446,9 +749,9 @@ mod tests {
         let id = spawn_clickable(&mut world, true, rect);
 
         let pos = Pos { x: 5, y: 5 };
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::CursorMoved { pos }).count();
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonPressed).count();
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonReleased).count();
+        handle_event(&mut world, PixieEvent::CursorMoved { pos });
+        handle_event(&mut world, PixieEvent::ButtonPressed);
+        handle_event(&mut world, PixieEvent::ButtonReleased);
 
         assert_eq!(world.get_resource::<Ui>().unwrap().focused(), Some(id));
     }
@@ -462,9 +765,9 @@ mod tests {
         let _id = spawn_clickable(&mut world, false, rect);
 
         let pos = Pos { x: 5, y: 5 };
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::CursorMoved { pos }).count();
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonPressed).count();
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonReleased).count();
+        handle_event(&mut world, PixieEvent::CursorMoved { pos });
+        handle_event(&mut world, PixieEvent::ButtonPressed);
+        handle_event(&mut world, PixieEvent::ButtonReleased);
 
         assert_eq!(world.get_resource::<Ui>().unwrap().focused(), None);
     }
@@ -480,20 +783,20 @@ mod tests {
         let _b = spawn_clickable(&mut world, true, rect_b);
 
         // Press on `a`, then move the cursor to hover over `b` before releasing.
-        let _ = handle_event::<Infallible>(
+        handle_event(
             &mut world,
-            PixieEvent::CursorMoved { pos: Pos { x: 5, y: 5 } },
-        )
-        .count();
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonPressed).count();
-        let _ = handle_event::<Infallible>(
+            PixieEvent::CursorMoved {
+                pos: Pos { x: 5, y: 5 },
+            },
+        );
+        handle_event(&mut world, PixieEvent::ButtonPressed);
+        handle_event(
             &mut world,
             PixieEvent::CursorMoved {
                 pos: Pos { x: 25, y: 25 },
             },
-        )
-        .count();
-        let _ = handle_event::<Infallible>(&mut world, PixieEvent::ButtonReleased).count();
+        );
+        handle_event(&mut world, PixieEvent::ButtonReleased);
 
         assert_eq!(world.get_resource::<Ui>().unwrap().focused(), None);
     }

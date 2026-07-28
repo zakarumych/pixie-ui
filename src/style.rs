@@ -74,13 +74,7 @@ pub struct Attributes {
     pub stroke: Option<Stroke>,
 
     /// The font used to draw the widget's text.
-    pub text_font: Option<FontId>,
-
-    /// The brush used to draw the widget's text.
-    pub text_brush: Option<Brush>,
-
-    /// The alignment of the widget's text.
-    pub text_align: Option<Align2>,
+    pub font: Option<FontId>,
 }
 
 impl Attributes {
@@ -115,14 +109,8 @@ impl Attributes {
         if let Some(stroke) = other.stroke {
             self.stroke = Some(stroke);
         }
-        if let Some(text_font) = other.text_font {
-            self.text_font = Some(text_font);
-        }
-        if let Some(text_brush) = other.text_brush {
-            self.text_brush = Some(text_brush);
-        }
-        if let Some(text_align) = other.text_align {
-            self.text_align = Some(text_align);
+        if let Some(font) = other.font {
+            self.font = Some(font);
         }
     }
 }

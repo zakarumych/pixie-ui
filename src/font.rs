@@ -23,6 +23,7 @@ pub struct Bitmap {
     pub bitmap: Box<[u8]>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Metrics {
     /// The horizontal and vertical advance of the glyph in pixels.
     pub advance: Size,
@@ -106,6 +107,10 @@ impl Font {
             }
         }
         rect
+    }
+
+    pub fn metrics(&self, glyph: Glyph) -> Option<Metrics> {
+        self.glyph_metrics.get(glyph.0 as usize).copied()
     }
 }
 

@@ -106,6 +106,17 @@ pub struct Stroke {
     pub offset: i32,
 }
 
+impl Stroke {
+    /// Creates a new stroke with the specified brush, width, and offset.
+    pub fn new(brush: Brush, width: u32) -> Self {
+        Stroke {
+            brush,
+            width,
+            offset: 0,
+        }
+    }
+}
+
 /// A draw command that can be used to render graphics on the screen.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Draw<'a> {

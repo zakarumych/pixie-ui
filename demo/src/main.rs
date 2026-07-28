@@ -1,35 +1,30 @@
-use edict::{entity::EntityId, query::With, world::World};
+use edict::{query::With, world::World};
 use pixie_ui::{
-    align::Align,
+    align::Align2,
     button::Button,
     color::Color,
-    draw::{Brush, Draw},
+    draw::{Brush, Draw, Stroke},
     event::PixieEvent,
+    focus::FocusOnClick,
     layout::layout_system,
+    margin::Margin,
     math::{Pos, Rect, Size},
+    resize::{Resizable, resize_on_drag, resize_on_drag_end, resize_on_drag_start},
     style::{Attributes, AttributesUpdate, Style, WidgetSize},
-    text::Text,
-    trigger::{OnClick, invoke},
+    text::{Text, TextInput, edit_on_key, edit_on_paste},
+    trigger::{OnClick, OnDrag, OnDragEnd, OnDragStart, invoke},
     ui::Ui,
     widget::{Container, RootWidget, SensesClicks, SensesCursor, Widget, sync_widget_parents},
 };
 use winit::application::ApplicationHandler;
 
-const CARD_SIZE: Size = Size { w: 280, h: 170 };
-const BUTTON_LOCAL_POS: Pos = Pos { x: 16, y: 110 };
-const BUTTON_SIZE: Size = Size { w: 120, h: 34 };
-
 const BUTTON_BASE: Color = Color::from_rgb(70, 110, 200);
 const BUTTON_PRESSED: Color = Color::from_rgb(45, 80, 150);
 const BUTTON_HOVER: Color = Color::from_rgb(50, 100, 180);
 
-const SCALE: u32 = 4;
+const TEXT_INPUT_STROKE: Color = Color::from_rgb(100, 100, 120);
 
-fn card_pos(virt_w: u32, virt_h: u32) -> Pos {
-    let x = ((virt_w as i32) - CARD_SIZE.w as i32).max(0) / 2;
-    let y = ((virt_h as i32) - CARD_SIZE.h as i32).max(0) / 2;
-    Pos { x, y }
-}
+const SCALE: u32 = 4;
 
 struct ButtonHoverStyle;
 
@@ -54,10 +49,30 @@ impl AttributesUpdate for ButtonHoverStyle {
     }
 }
 
+struct FocusedInputTextStyle;
+
+impl AttributesUpdate for FocusedInputTextStyle {
+    type Query = With<TextInput>;
+
+    fn update(
+        &self,
+        attributes: &mut Attributes,
+        _: (),
+        focused: bool,
+        _hovered: bool,
+        _pressed: bool,
+    ) {
+        if focused {
+            attributes.stroke = Some(Stroke::new(Brush::Solid(TEXT_INPUT_STROKE), 1));
+        } else {
+            attributes.stroke = None;
+        };
+    }
+}
+
 struct UiState {
     world: World,
     style: Style,
-    card: EntityId,
 }
 
 impl UiState {
@@ -68,26 +83,15 @@ impl UiState {
         let mut style = Style::new(Attributes::default());
         // style.push(ApplyOwnAttributes);
         style.push(ButtonHoverStyle);
-
-        // let text = world
-        //     .spawn((
-        //         Widget { parent: None },
-        //         Text {
-        //             string: "Click me".to_string(),
-        //         },
-        //         Attributes {
-        //             bg_brush: Some(Brush::Solid(Color::TRANSPARENT)),
-        //             ..Default::default()
-        //         },
-        //     ))
-        //     .id();
+        style.push(FocusedInputTextStyle);
 
         let title = world
             .spawn((
                 Widget { parent: None },
                 Attributes {
-                    position: Some(Pos { x: 16, y: 14 }),
-                    text_brush: Some(Brush::Solid(Color::WHITE)),
+                    fg_brush: Some(Brush::Solid(Color::WHITE)),
+                    // bg_brush: Some(Brush::Solid(Color::from_rgb(10, 10, 12))),
+                    outer_margin: Some(Margin::uniform(4)),
                     ..Default::default()
                 },
                 Text {
@@ -100,8 +104,9 @@ impl UiState {
             .spawn((
                 Widget { parent: None },
                 Attributes {
-                    position: Some(Pos { x: 16, y: 36 }),
-                    text_brush: Some(Brush::Solid(Color::from_rgb(200, 200, 210))),
+                    fg_brush: Some(Brush::Solid(Color::from_rgb(200, 200, 210))),
+                    // bg_brush: Some(Brush::Solid(Color::from_rgb(10, 10, 12))),
+                    outer_margin: Some(Margin::uniform(4)),
                     ..Default::default()
                 },
                 Text {
@@ -116,12 +121,10 @@ impl UiState {
             .spawn((
                 Widget { parent: None },
                 Attributes {
-                    position: Some(BUTTON_LOCAL_POS),
-                    size: Some(WidgetSize::Fixed(BUTTON_SIZE)),
-                    text_brush: Some(Brush::Solid(Color::WHITE)),
-                    text_align: Some(Align::Center.into()),
-                    // text_font: Some(FontId(1)),
-                    content_align: Some(Align::Center.into()),
+                    fg_brush: Some(Brush::Solid(Color::WHITE)),
+                    content_align: Some(Align2::CENTER),
+                    inner_margin: Some(Margin::uniform(8)),
+                    outer_margin: Some(Margin::uniform(4)),
                     ..Default::default()
                 },
                 Button,
@@ -144,18 +147,51 @@ impl UiState {
             ))
             .id();
 
+        let input = world
+            .spawn((
+                Widget { parent: None },
+                Attributes {
+                    // position: Some(Pos { x: 16, y: 70 }),
+                    // size: Some(WidgetSize::Fixed(Size { w: 250, h: 30 })),
+                    fg_brush: Some(Brush::Solid(Color::WHITE)),
+                    bg_brush: Some(Brush::Solid(Color::from_rgb(50, 50, 60))),
+                    content_align: Some(Align2::LEFT),
+                    inner_margin: Some(Margin::uniform(8)),
+                    outer_margin: Some(Margin::uniform(4)),
+                    ..Default::default()
+                },
+                Text {
+                    string: "Type here".to_string(),
+                },
+                TextInput::new(),
+                SensesCursor,
+                SensesClicks,
+                FocusOnClick,
+                edit_on_key(),
+                edit_on_paste(),
+            ))
+            .id();
+
         let card = world
             .spawn((
                 Widget { parent: None },
                 Attributes {
-                    position: Some(Pos { x: 0, y: 0 }),
-                    size: Some(WidgetSize::Fixed(CARD_SIZE)),
+                    position: Some(Pos { x: 32, y: 32 }),
+                    size: Some(WidgetSize::Fixed(Size { w: 160, h: 140 })),
                     bg_brush: Some(Brush::Solid(Color::from_rgb(45, 48, 58))),
+                    stroke: Some(Stroke::new(Brush::Solid(Color::from_rgb(90, 94, 108)), 1)),
+                    inner_margin: Some(Margin::uniform(16)),
                     ..Default::default()
                 },
+                Resizable::new(Size { w: 8, h: 8 }),
                 Container {
-                    children: vec![title, counter, button],
+                    children: vec![title, counter, button, input],
                 },
+                SensesCursor,
+                SensesClicks,
+                OnDragStart(resize_on_drag_start()),
+                OnDrag(resize_on_drag()),
+                OnDragEnd(resize_on_drag_end()),
             ))
             .id();
 
@@ -167,6 +203,7 @@ impl UiState {
                     stretches: (true, true),
                 }),
                 bg_brush: Some(Brush::Solid(Color::from_rgb(18, 18, 24))),
+                inner_margin: Some(Margin::uniform(32)),
                 ..Default::default()
             },
             Container {
@@ -174,13 +211,7 @@ impl UiState {
             },
         ));
 
-        UiState { world, style, card }
-    }
-
-    fn set_card_pos(&mut self, pos: Pos) {
-        if let Ok(attrs) = self.world.get::<&mut Attributes>(self.card) {
-            attrs.position = Some(pos);
-        }
+        UiState { world, style }
     }
 }
 
@@ -215,9 +246,6 @@ impl App {
             self.offscreen = Some(image);
             self.offscreen_size = (virt_w, virt_h);
         }
-
-        let cp = card_pos(virt_w, virt_h);
-        self.ui_state.set_card_pos(cp);
 
         sync_widget_parents(&mut self.ui_state.world);
 
@@ -299,7 +327,7 @@ impl App {
                 mev::Extent3::new(virt_w, virt_h, 1),
                 frame.image(),
                 mev::Offset3::ZERO,
-                frame.image().extent().into_3d(),
+                mev::Extent3::new(virt_w * SCALE, virt_h * SCALE, 1),
                 [mev::AddressMode::Repeat; 3],
                 mev::Filter::Nearest,
             );
@@ -311,8 +339,6 @@ impl App {
         }
     }
 }
-
-enum Action {}
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -329,7 +355,7 @@ impl ApplicationHandler for App {
             let size = window.inner_size();
             surface.preferred_extent(mev::Extent2::new(size.width, size.height));
             surface.preferred_usage(mev::ImageUsage::TARGET);
-            surface.preferred_present_mode(mev::PresentMode::Fifo);
+            surface.preferred_present_mode(mev::PresentMode::Mailbox);
 
             self.window = Some(window);
             self.surface = Some(surface);
@@ -360,9 +386,7 @@ impl ApplicationHandler for App {
 
             let world = &mut self.ui_state.world;
 
-            for action in pixie_ui::ui::handle_event::<Action>(world, event) {
-                match action {}
-            }
+            pixie_ui::ui::handle_event(world, event);
         }
 
         match event {

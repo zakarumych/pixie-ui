@@ -8,6 +8,7 @@ pub mod font;
 pub mod layout;
 pub mod margin;
 pub mod math;
+pub mod resize;
 pub mod style;
 pub mod text;
 pub mod texture;
