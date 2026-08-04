@@ -1,4 +1,7 @@
-use edict::{query::With, world::World};
+use edict::{
+    query::{Cpy, With},
+    world::World,
+};
 use pixie_ui::{
     align::Align2,
     button::Button,
@@ -8,13 +11,14 @@ use pixie_ui::{
     focus::FocusOnClick,
     layout::layout_system,
     margin::Margin,
-    math::{Pos, Rect, Size},
-    resize::{Resizable, resize_on_drag, resize_on_drag_end, resize_on_drag_start},
-    style::{Attributes, AttributesUpdate, Style, WidgetSize},
+    math::{Pos, Rect, Size, Vec},
+    resize::{Resizable, near_border, resize_on_drag, resize_on_drag_end, resize_on_drag_start},
+    style::{Anchor, Attributes, AttributesUpdate, Stretch, Style, WidgetPos, WidgetSize},
     text::{Text, TextInput, edit_on_key, edit_on_paste},
-    trigger::{OnClick, OnDrag, OnDragEnd, OnDragStart, invoke},
+    trigger::OnClick,
     ui::Ui,
     widget::{Container, RootWidget, SensesClicks, SensesCursor, Widget, sync_widget_parents},
+    world::WorldExt,
 };
 use winit::application::ApplicationHandler;
 
@@ -23,6 +27,8 @@ const BUTTON_PRESSED: Color = Color::from_rgb(45, 80, 150);
 const BUTTON_HOVER: Color = Color::from_rgb(50, 100, 180);
 
 const TEXT_INPUT_STROKE: Color = Color::from_rgb(100, 100, 120);
+
+const RESIZE_BORDER_HIGHLIGHT: Color = Color::from_rgb(230, 200, 90);
 
 const SCALE: u32 = 4;
 
@@ -35,9 +41,12 @@ impl AttributesUpdate for ButtonHoverStyle {
         &self,
         attributes: &mut Attributes,
         _: (),
+        _rect: Rect,
+        _cursor: Option<Pos>,
         _focused: bool,
         hovered: bool,
         pressed: bool,
+        _dragged: bool,
     ) {
         if pressed {
             attributes.bg_brush = Some(Brush::Solid(BUTTON_PRESSED));
@@ -58,15 +67,42 @@ impl AttributesUpdate for FocusedInputTextStyle {
         &self,
         attributes: &mut Attributes,
         _: (),
+        _rect: Rect,
+        _cursor: Option<Pos>,
         focused: bool,
         _hovered: bool,
         _pressed: bool,
+        _dragged: bool,
     ) {
         if focused {
             attributes.stroke = Some(Stroke::new(Brush::Solid(TEXT_INPUT_STROKE), 1));
         } else {
             attributes.stroke = None;
         };
+    }
+}
+
+struct ResizeBorderHighlightStyle;
+
+impl AttributesUpdate for ResizeBorderHighlightStyle {
+    type Query = Cpy<Resizable>;
+
+    fn update(
+        &self,
+        attributes: &mut Attributes,
+        resizable: Resizable,
+        rect: Rect,
+        cursor: Option<Pos>,
+        _focused: bool,
+        hovered: bool,
+        _pressed: bool,
+        dragged: bool,
+    ) {
+        attributes.stroke = None;
+        let near = hovered && cursor.is_some_and(|pos| near_border(rect, pos, resizable.border));
+        if near || dragged {
+            attributes.stroke = Some(Stroke::new(Brush::Solid(RESIZE_BORDER_HIGHLIGHT), 2));
+        }
     }
 }
 
@@ -84,6 +120,7 @@ impl UiState {
         // style.push(ApplyOwnAttributes);
         style.push(ButtonHoverStyle);
         style.push(FocusedInputTextStyle);
+        style.push(ResizeBorderHighlightStyle);
 
         let title = world
             .spawn((
@@ -134,7 +171,7 @@ impl UiState {
                 SensesCursor,
                 SensesClicks,
                 // OnClick(emit(Action::Increment)),
-                OnClick(invoke(move |world, _| {
+                OnClick::invoke(move |world, _| {
                     let Ok(mut view) = world.try_view_one::<&mut Text>(counter) else {
                         return;
                     };
@@ -143,7 +180,7 @@ impl UiState {
                     };
                     text.string = format!("Clicks: {}", clicks + 1);
                     clicks += 1;
-                })),
+                }),
             ))
             .id();
 
@@ -176,10 +213,13 @@ impl UiState {
             .spawn((
                 Widget { parent: None },
                 Attributes {
-                    position: Some(Pos { x: 32, y: 32 }),
+                    position: Some(WidgetPos::Fixed {
+                        offset: Vec { x: 0, y: 32 },
+                        anchor: Anchor::TopCenter,
+                    }),
                     size: Some(WidgetSize::Fixed(Size { w: 160, h: 140 })),
                     bg_brush: Some(Brush::Solid(Color::from_rgb(45, 48, 58))),
-                    stroke: Some(Stroke::new(Brush::Solid(Color::from_rgb(90, 94, 108)), 1)),
+                    stroke: None,
                     inner_margin: Some(Margin::uniform(16)),
                     ..Default::default()
                 },
@@ -189,9 +229,9 @@ impl UiState {
                 },
                 SensesCursor,
                 SensesClicks,
-                OnDragStart(resize_on_drag_start()),
-                OnDrag(resize_on_drag()),
-                OnDragEnd(resize_on_drag_end()),
+                resize_on_drag_start(),
+                resize_on_drag(),
+                resize_on_drag_end(),
             ))
             .id();
 
@@ -199,9 +239,7 @@ impl UiState {
             Widget { parent: None },
             RootWidget,
             Attributes {
-                size: Some(WidgetSize::Flexible {
-                    stretches: (true, true),
-                }),
+                size: Some(WidgetSize::Flexible(Stretch::BOTH)),
                 bg_brush: Some(Brush::Solid(Color::from_rgb(18, 18, 24))),
                 inner_margin: Some(Margin::uniform(32)),
                 ..Default::default()
@@ -271,7 +309,7 @@ impl App {
         }
 
         let mut draws: std::vec::Vec<Draw> = std::vec::Vec::new();
-        Ui::draw_ui(&mut self.ui_state.world, &mut draws);
+        self.ui_state.world.draw_ui(&mut draws);
 
         let offscreen = self.offscreen.as_ref().unwrap().clone();
 
@@ -355,7 +393,8 @@ impl ApplicationHandler for App {
             let size = window.inner_size();
             surface.preferred_extent(mev::Extent2::new(size.width, size.height));
             surface.preferred_usage(mev::ImageUsage::TARGET);
-            surface.preferred_present_mode(mev::PresentMode::Mailbox);
+            surface.preferred_present_mode(mev::PresentMode::Fifo);
+            surface.preferred_image_count(3);
 
             self.window = Some(window);
             self.surface = Some(surface);
@@ -384,9 +423,7 @@ impl ApplicationHandler for App {
                 pos.y /= SCALE as i32;
             }
 
-            let world = &mut self.ui_state.world;
-
-            pixie_ui::ui::handle_event(world, event);
+            self.ui_state.world.handle_event(event);
         }
 
         match event {

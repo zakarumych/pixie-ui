@@ -1,10 +1,10 @@
 use std::ops::Range;
 
-use edict::component::Component;
+use edict::{component::Component, entity::EntityId, world::WorldLocal};
 
 use crate::{
     event::Key,
-    trigger::{OnKey, OnPaste, invoke_key, invoke_paste},
+    trigger::{OnKey, OnPaste},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -122,7 +122,7 @@ fn move_end(input: &mut TextInput, text: &mut Text) {
 
 /// Default [`OnKey`] handler: edits the widget's [`TextInput`] per `key`.
 pub fn edit_on_key() -> OnKey {
-    OnKey(invoke_key(|world, id, key| {
+    OnKey::invoke(|world: &WorldLocal, id, key| {
         let Ok(mut view) = world.try_view_one::<(&mut TextInput, &mut Text)>(id) else {
             return;
         };
@@ -142,21 +142,21 @@ pub fn edit_on_key() -> OnKey {
             Key::End => move_end(input, text),
             Key::Tab => {}
         }
-    }))
+    })
 }
 
 /// Default [`OnPaste`] handler: replaces the widget's [`TextInput`] selection
 /// with the pasted text.
 pub fn edit_on_paste() -> OnPaste {
-    OnPaste(invoke_paste(|world, id, pasted| {
+    OnPaste::invoke(|world: &WorldLocal, id: EntityId, pasted: String| {
         let Ok(mut view) = world.try_view_one::<(&mut TextInput, &mut Text)>(id) else {
             return;
         };
         let Some((input, text)) = view.get_mut() else {
             return;
         };
-        replace_selection(input, text, pasted);
-    }))
+        replace_selection(input, text, &*pasted);
+    })
 }
 
 #[cfg(test)]

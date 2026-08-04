@@ -272,6 +272,10 @@ impl Ratio {
             den: const { NonZero::new(1).unwrap() },
         }
     }
+
+    pub const fn floor(&self) -> i32 {
+        self.num / self.den.get()
+    }
 }
 
 impl Neg for Ratio {
@@ -308,6 +312,40 @@ impl Add for Ratio {
     }
 }
 
+impl Add<i32> for Ratio {
+    type Output = Self;
+
+    #[inline]
+    fn add(self, rhs: i32) -> Self {
+        if self.num == 0 {
+            return Ratio::int(rhs);
+        }
+
+        let num = self.num + rhs * self.den.get();
+        let den = self.den.get();
+
+        let (num, den) = reduce(num, NonZero::new(den).unwrap());
+        Ratio { num, den }
+    }
+}
+
+impl Add<Ratio> for i32 {
+    type Output = Ratio;
+
+    #[inline]
+    fn add(self, rhs: Ratio) -> Ratio {
+        if rhs.num == 0 {
+            return Ratio::int(self);
+        }
+
+        let num = self * rhs.den.get() + rhs.num;
+        let den = rhs.den.get();
+
+        let (num, den) = reduce(num, NonZero::new(den).unwrap());
+        Ratio { num, den }
+    }
+}
+
 impl Sub for Ratio {
     type Output = Self;
 
@@ -324,6 +362,40 @@ impl Sub for Ratio {
 
         let num = self.num * (rhs.den.get() / dgcd) - rhs.num * (self.den.get() / dgcd);
         let den = self.den.get() * (rhs.den.get() / dgcd);
+
+        let (num, den) = reduce(num, NonZero::new(den).unwrap());
+        Ratio { num, den }
+    }
+}
+
+impl Sub<i32> for Ratio {
+    type Output = Self;
+
+    #[inline]
+    fn sub(self, rhs: i32) -> Self {
+        if self.num == 0 {
+            return Ratio::int(-rhs);
+        }
+
+        let num = self.num - rhs * self.den.get();
+        let den = self.den.get();
+
+        let (num, den) = reduce(num, NonZero::new(den).unwrap());
+        Ratio { num, den }
+    }
+}
+
+impl Sub<Ratio> for i32 {
+    type Output = Ratio;
+
+    #[inline]
+    fn sub(self, rhs: Ratio) -> Ratio {
+        if rhs.num == 0 {
+            return Ratio::int(self);
+        }
+
+        let num = self * rhs.den.get() - rhs.num;
+        let den = rhs.den.get();
 
         let (num, den) = reduce(num, NonZero::new(den).unwrap());
         Ratio { num, den }
@@ -350,6 +422,44 @@ impl Mul for Ratio {
     }
 }
 
+impl Mul<i32> for Ratio {
+    type Output = Self;
+
+    #[inline]
+    fn mul(self, rhs: i32) -> Self {
+        if self.num == 0 || rhs == 0 {
+            return Ratio::int(0);
+        }
+
+        let gcd = gcd(self.den.get(), rhs.abs());
+
+        let num = self.num * (rhs / gcd);
+        let den = self.den.get() / gcd;
+
+        let den = NonZero::new(den).unwrap();
+        Ratio { num, den }
+    }
+}
+
+impl Mul<Ratio> for i32 {
+    type Output = Ratio;
+
+    #[inline]
+    fn mul(self, rhs: Ratio) -> Ratio {
+        if self == 0 || rhs.num == 0 {
+            return Ratio::int(0);
+        }
+
+        let gcd = gcd(self.abs(), rhs.den.get());
+
+        let num = (self / gcd) * rhs.num;
+        let den = rhs.den.get() / gcd;
+
+        let den = NonZero::new(den).unwrap();
+        Ratio { num, den }
+    }
+}
+
 impl Div for Ratio {
     type Output = Self;
 
@@ -367,6 +477,50 @@ impl Div for Ratio {
 
         let num = (self.num / gcd1) * (rhs.den.get() / gcd2);
         let den = (self.den.get() / gcd2) * (rhs.num.abs() / gcd1);
+
+        let den = NonZero::new(den).unwrap();
+        Ratio { num, den }
+    }
+}
+
+impl Div<i32> for Ratio {
+    type Output = Self;
+
+    #[inline]
+    fn div(self, rhs: i32) -> Self {
+        if rhs == 0 {
+            divide_by_zero();
+        }
+        if self.num == 0 {
+            return Ratio::int(0);
+        }
+
+        let gcd = gcd(self.num.abs(), rhs.abs());
+
+        let num = self.num / gcd;
+        let den = self.den.get() * (rhs.abs() / gcd);
+
+        let den = NonZero::new(den).unwrap();
+        Ratio { num, den }
+    }
+}
+
+impl Div<Ratio> for i32 {
+    type Output = Ratio;
+
+    #[inline]
+    fn div(self, rhs: Ratio) -> Ratio {
+        if rhs.num == 0 {
+            divide_by_zero();
+        }
+        if self == 0 {
+            return Ratio::int(0);
+        }
+
+        let gcd = gcd(self.abs(), rhs.num.abs());
+
+        let num = self / gcd;
+        let den = rhs.den.get() * (rhs.num.abs() / gcd);
 
         let den = NonZero::new(den).unwrap();
         Ratio { num, den }
@@ -401,6 +555,62 @@ const fn gcd(a: i32, b: i32) -> i32 {
     debug_assert!(b % x == 0);
 
     x
+}
+
+/// Relative position in fraction of a size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RelPos {
+    pub x: Ratio,
+    pub y: Ratio,
+}
+
+impl RelPos {
+    pub const ZERO: RelPos = RelPos {
+        x: Ratio::ZERO,
+        y: Ratio::ZERO,
+    };
+
+    /// Create a relative position from an absolute position and size.
+    pub fn from_absolute(pos: Pos, size: Size) -> Self {
+        assert_ne!(size.w, 0, "size.w must not be zero");
+        assert_ne!(size.h, 0, "size.h must not be zero");
+
+        let x = Ratio::new(pos.x, NonZero::new(size.w).unwrap());
+        let y = Ratio::new(pos.y, NonZero::new(size.h).unwrap());
+
+        RelPos { x, y }
+    }
+
+    /// Convert a relative position to an absolute position given a size.
+    pub fn into_absolute(self, size: Size) -> Pos {
+        let x = (self.x.num * size.w) / self.x.den.get();
+        let y = (self.y.num * size.h) / self.y.den.get();
+        Pos { x, y }
+    }
+}
+
+impl Add for RelPos {
+    type Output = Self;
+
+    #[inline]
+    fn add(self, rhs: Self) -> Self {
+        RelPos {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+        }
+    }
+}
+
+impl Sub for RelPos {
+    type Output = Self;
+
+    #[inline]
+    fn sub(self, rhs: Self) -> Self {
+        RelPos {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+        }
+    }
 }
 
 #[cold]
